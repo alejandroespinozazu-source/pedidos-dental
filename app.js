@@ -121,7 +121,7 @@
   }
   const TITULOS = { catalogo: 'Solicitar insumos', carrito: 'Mi solicitud', mis: 'Mis pedidos', perfil: 'Mi perfil', bandeja: 'Solicitudes a bodega', corte: 'Corte y pedidos',
     recepcion: 'Recepción de despachos', catadmin: 'Catálogo AVIS', usuarios: 'Usuarios y permisos', config: 'Configuración', mas: 'Más opciones',
-    plazos: 'Plazos de pedido', reportes: 'Consumo y cumplimiento' };
+    plazos: 'Plazos de pedido', reportes: 'Consumo y cumplimiento', consolidado: 'Consolidado de pedidos' };
 
   function render() {
     const app = $('#app');
@@ -341,9 +341,9 @@
       V(`<div class="tarjeta"><h2>1. Importar informe AVIS del período</h2>
         <p class="muted">En AVIS abra <b>Reportes → Farmacia → Informe Completo de Productos</b> de la bodega dental, seleccione el período, presione <b>Ctrl+A</b> y <b>Ctrl+C</b>, y pegue aquí. También puede subir el PDF del informe.</p>
         <textarea id="avisTxt" placeholder="Pegue aquí el informe completo de AVIS…"></textarea>
-        <div class="fila"><div class="col"><label>O suba el PDF del informe</label><input type="file" id="avisPdf" accept="application/pdf"></div></div>
+        <div class="fila"><div class="col"><label>O suba el informe exportado (Excel, PDF o CSV)</label><input type="file" id="avisPdf" accept=".xls,.xlsx,.csv,.htm,.html,.pdf,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div></div>
         <div class="fila"><div class="col"><label>Desde (si no viene en el informe)</label><input type="date" id="avDesde"></div><div class="col"><label>Hasta</label><input type="date" id="avHasta"></div></div>
-        <p><button class="btn" onclick="App.importarAvis()">Importar informe</button></p>
+        <p><button class="btn" onclick="App.importarAvis()">Importar informe</button> <button class="btn sec" onclick="App.ir('consolidado')">📋 Ver consolidado de la app (sin AVIS)</button></p>
         ${ult ? `<p class="muted">Último informe: ${fecha(ult.desde)} al ${fecha(ult.hasta)} · ${ult.n_productos} productos · importado ${fecha(ult.fecha, true)} por ${esc(ult.usuario)}${ult.n_sin_catalogo ? ` · <span class="estado e-amarillo">${ult.n_sin_catalogo} productos nuevos agregados al catálogo</span>` : ''}</p>` : ''}</div>
         <div class="tarjeta"><h2>2. Generar corte (borrador editable)</h2>
         ${ult ? `<div class="fila"><div class="col"><label>Informe AVIS</label><select id="ctImp">${imps.map(i => `<option value="${i.id}">${fecha(i.desde)} al ${fecha(i.hasta)} (${i.id})</option>`).join('')}</select></div>
@@ -358,7 +358,11 @@
     const texto = $('#avisTxt').value.trim(), file = $('#avisPdf').files[0];
     if (!texto && !file) return toast('Pegue el informe o seleccione el PDF.', true);
     const d = { texto, desde: $('#avDesde').value, hasta: $('#avHasta').value };
-    if (!texto && file) { if (file.size > 15e6) return toast('El archivo supera 15 MB.', true); d.archivo = { nombre: file.name, mime: file.type, data: await leerArchivo(file) }; }
+    if (!texto && file) {
+      if (file.size > 15e6) return toast('El archivo supera 15 MB.', true);
+      if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') d.archivo = { nombre: file.name, mime: file.type, data: await leerArchivo(file) };
+      else { const ok = await intentar(async () => { Object.assign(d, await leerAvisExcel(file)); return true; }); if (!ok) return; }
+    }
     await intentar(async () => {
       const r = await api('importarAvis', d);
       modal(`<h2>Informe importado</h2><p>Período <b>${fecha(r.desde)} al ${fecha(r.hasta)}</b>${r.bodega ? '<br><span class="muted">' + esc(r.bodega) + '</span>' : ''}</p>
@@ -368,6 +372,43 @@
         <p><button class="btn bloque" onclick="App.cerrarModal();App.ir('corte')">Continuar</button></p>`);
     });
   }
+  /** Lee el Informe Completo de Productos exportado a Excel desde AVIS (xls, xlsx, csv o html). */
+  function numCL(v) {
+    if (typeof v === 'number') return v;
+    let t = String(v || '').replace(/[$\s]/g, ''); if (!t) return 0;
+    if (/^-?[\d.]+,\d+$/.test(t)) t = t.replace(/\./g, '').replace(',', '.');
+    else if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) t = t.replace(/,/g, '');
+    else if (/^-?\d{1,3}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, '');
+    const n = parseFloat(t.replace(',', '.')); return isNaN(n) ? 0 : n;
+  }
+  function fechaCL(v) {
+    if (v instanceof Date) return String(v.getDate()).padStart(2, '0') + '/' + String(v.getMonth() + 1).padStart(2, '0') + '/' + v.getFullYear();
+    if (typeof v === 'number' && v > 20000 && v < 80000) { const o = XLSX.SSF.parse_date_code(v); return String(o.d).padStart(2, '0') + '/' + String(o.m).padStart(2, '0') + '/' + o.y; }
+    const m = String(v || '').match(/(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/); return m ? m[1].padStart(2, '0') + '/' + m[2].padStart(2, '0') + '/' + m[3] : '';
+  }
+  const aISO = f => { const m = String(f).match(/(\d{2})\/(\d{2})\/(\d{4})/); return m ? m[3] + '-' + m[2] + '-' + m[1] : ''; };
+  async function leerAvisExcel(file) {
+    await cargarXLSX();
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true, raw: true });
+    for (const n of wb.SheetNames) {
+      const a = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: '' });
+      const iH = a.findIndex(r => { const h = r.map(sinTilde); return h.some(x => x.startsWith('descrip')) && h.some(x => x.startsWith('consumo')) && h.some(x => x.startsWith('saldo')); });
+      if (iH < 0) continue;
+      const h = a[iH].map(sinTilde), col = f => h.findIndex(f);
+      const cD = col(x => x.startsWith('descrip')), cC = col(x => x.startsWith('consumo')), cS = col(x => x.startsWith('saldo')), cV = col(x => x.includes('venc')), cK = col(x => x === 'codigo');
+      let desde = '', hasta = '', bodega = '';
+      a.slice(0, iH).forEach(r => r.forEach((c, k) => { const t = sinTilde(c);
+        const sig = () => r.slice(k + 1).find(x => String(x).trim() && String(x).trim() !== ':');
+        if (t.startsWith('desde')) desde = fechaCL(t.replace(/^desde\s*:?/, '').trim() ? c : sig());
+        if (t.startsWith('hasta')) hasta = fechaCL(t.replace(/^hasta\s*:?/, '').trim() ? c : sig());
+        if (t.startsWith('farmacia/bodega')) bodega = String(String(c).split(':')[1] || sig() || '').trim(); }));
+      const filas = a.slice(iH + 1).map(r => ({ codigo: cK >= 0 ? String(r[cK]).trim() : '', nombre: String(r[cD] || '').trim(), vencimiento: cV >= 0 ? fechaCL(r[cV]) : '', consumo: numCL(r[cC]), saldo: numCL(r[cS]) }))
+        .filter(f => f.nombre && !/^total/i.test(f.nombre));
+      if (filas.length) return { filas, nombre_archivo: file.name, bodega, desde: $('#avDesde').value || aISO(desde), hasta: $('#avHasta').value || aISO(hasta) };
+    }
+    throw new Error('No se encontraron las columnas Descripción, Consumo y Saldo en el archivo. Verifique que sea el "Informe Completo de Productos" de AVIS.');
+  }
+
   async function crearCorte() {
     await intentar(async () => {
       S.corte = await api('crearCorte', { importe_id: $('#ctImp').value, seguridad: $('#ctSeg').value });
@@ -560,6 +601,7 @@
     const f = S.filtro.cat || 'VISIBLES';
     V(`<div class="buscador"><div class="fila"><input class="col" type="search" id="qa" placeholder="Buscar por nombre AVIS o código…" value="${esc(S.filtro.qa || '')}" oninput="App.buscarAdmin(this.value)">
       <button class="btn chico" onclick="App.editarProducto('')">+ Nuevo</button><button class="btn sec chico" onclick="App.importarFotosForm()">⬆ Importar fotos desde planilla</button></div>
+      <div class="fila" style="margin-top:6px"><button class="btn sec chico" onclick="App.descargarClasificacion()">⬇ Descargar clasificación</button><button class="btn sec chico" onclick="App.importarClasifForm()">⬆ Importar clasificación</button><button class="btn peligro chico" onclick="App.borrarFotosForm()">🗑 Borrar todas las fotos</button></div>
       <div class="chips" style="margin-top:8px">${[['VISIBLES', 'Visibles para TONS'], ['OCULTOS', 'Ocultos'], ['SINFOTO', 'Visibles sin foto'], ['FARMACIA', 'Planilla Farmacia'], ['BODEGA', 'Planilla Bodega'], ['NINGUNA', 'Sin planilla'], ['REVISAR', 'Revisar'], ['TODOS', 'Todos']].map(x =>
         `<button class="chip ${f === x[0] ? 'activo' : ''}" onclick="App.filtrar('cat','${x[0]}')">${x[1]}</button>`).join('')}</div></div><div id="listaAdmin"></div>`);
     pintarCatAdmin();
@@ -655,6 +697,94 @@
     }
     return res;
   }
+  /* ---- Clasificación (categoría y visibilidad) por Excel ---- */
+  function cargarXLSX() {
+    if (window.XLSX) return Promise.resolve();
+    return new Promise((ok, mal) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      sc.onload = ok; sc.onerror = () => mal(new Error('No se pudo cargar el lector de Excel. Revise su conexión.')); document.head.appendChild(sc); });
+  }
+  const etiquetaPlanilla = p => p.planilla === 'FARMACIA' ? 'Farmacia fila ' + p.fila : (p.planilla === 'BODEGA' ? 'Bodega Central fila ' + p.fila : 'Sin planilla');
+  async function descargarClasificacion() {
+    await intentar(async () => {
+      await cargarXLSX();
+      const l = [...S.admin.productos].sort((a, b) => (b.visible - a.visible) || a.categoria.localeCompare(b.categoria) || a.nombre_avis.localeCompare(b.nombre_avis));
+      const filas = [['ID', 'Producto (nombre AVIS)', 'Planilla de pedido', 'Categoría actual', 'Categoría', 'Visible para TONS', 'Visible actual']]
+        .concat(l.map(p => [p.id, p.nombre_avis, etiquetaPlanilla(p), p.categoria, p.categoria, p.visible ? 'SI' : 'NO', p.visible ? 'SI' : 'NO']));
+      const wb = XLSX.utils.book_new(), ws = XLSX.utils.aoa_to_sheet(filas);
+      ws['!cols'] = [{ wch: 9 }, { wch: 58 }, { wch: 22 }, { wch: 28 }, { wch: 30 }, { wch: 14 }, { wch: 12 }];
+      ws['!autofilter'] = { ref: 'A1:G' + filas.length };
+      XLSX.utils.book_append_sheet(wb, ws, 'Clasificación');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Categoría']].concat([...new Set(l.map(p => p.categoria))].sort().map(c => [c]))), 'Categorías');
+      XLSX.writeFile(wb, 'CLASIFICACION_PRODUCTOS_APP.xlsx');
+    });
+  }
+  function importarClasifForm() {
+    modal(`<h2>Importar clasificación</h2>
+      <p class="muted">Suba el Excel de clasificación corregido. Se leen las columnas <b>ID</b>, <b>Categoría</b> y <b>Visible para TONS</b>; los demás datos no se modifican.</p>
+      <input type="file" id="clArch" accept=".xlsx,.xls,.csv"><div id="clRes"></div>
+      <div class="fila" style="margin-top:10px"><button class="btn col" onclick="App.leerClasificacion()">Revisar cambios</button><button class="btn sec col" onclick="App.cerrarModal()">Cerrar</button></div>`);
+  }
+  const sinTilde = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+  async function leerClasificacion() {
+    const f = $('#clArch').files[0]; if (!f) return toast('Seleccione el Excel corregido.', true);
+    const out = $('#clRes'); out.innerHTML = '<p class="muted">Leyendo…</p>';
+    await intentar(async () => {
+      await cargarXLSX();
+      const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+      let filas = null, cab = null, iH = -1;
+      for (const n of [wb.SheetNames.find(x => sinTilde(x) === 'clasificacion')].concat(wb.SheetNames).filter(Boolean)) {
+        const a = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: '' });
+        iH = a.findIndex(r => r.map(sinTilde).includes('id') && r.map(sinTilde).includes('categoria'));
+        if (iH >= 0) { filas = a; cab = a[iH].map(sinTilde); break; }
+      }
+      if (!filas) { out.innerHTML = '<p class="estado e-rojo">No se encontró una hoja con las columnas "ID" y "Categoría".</p>'; return; }
+      const cId = cab.indexOf('id'), cCat = cab.indexOf('categoria'), cVis = cab.findIndex(h => h.startsWith('visible para'));
+      const porId = {}; S.admin.productos.forEach(p => porId[p.id] = p);
+      const cambios = [], noExiste = [], visInvalido = [];
+      filas.slice(iH + 1).forEach((r, k) => {
+        const id = String(r[cId] || '').trim(); if (!id) return;
+        const p = porId[id]; if (!p) { noExiste.push(id); return; }
+        const cat = String(r[cCat] || '').replace(/\s+/g, ' ').trim();
+        let vis; if (cVis >= 0) { const v = sinTilde(r[cVis]); if (v === 'si' || v === 's') vis = true; else if (v === 'no' || v === 'n') vis = false; else if (v) visInvalido.push(id + ' (fila ' + (iH + k + 2) + ')'); }
+        const ch = {}; if (cat && cat !== p.categoria) ch.categoria = cat; if (vis !== undefined && vis !== p.visible) ch.visible = vis;
+        if (Object.keys(ch).length) cambios.push(Object.assign({ id, nombre: p.nombre_avis, antes: p.categoria, visAntes: p.visible }, ch));
+      });
+      S.clasifCambios = cambios;
+      const nCat = cambios.filter(c => c.categoria).length, nVis = cambios.filter(c => c.visible !== undefined).length;
+      const nuevas = [...new Set(cambios.map(c => c.categoria).filter(c => c && !S.admin.productos.some(p => p.categoria === c)))];
+      out.innerHTML = `<div class="kpis" style="margin-top:10px"><div class="kpi"><b>${nCat}</b><span>cambios de categoría</span></div><div class="kpi"><b>${nVis}</b><span>cambios de visibilidad</span></div></div>
+        ${nuevas.length ? `<p>Categorías nuevas: ${nuevas.map(c => `<span class="estado e-azul">${esc(c)}</span>`).join(' ')}</p>` : ''}
+        ${noExiste.length ? `<p class="estado e-amarillo">${noExiste.length} ID no existen en el catálogo y se omiten: ${noExiste.slice(0, 15).map(esc).join(', ')}</p>` : ''}
+        ${visInvalido.length ? `<p class="estado e-amarillo">Valor de "Visible para TONS" no reconocido (use SI o NO): ${visInvalido.slice(0, 10).map(esc).join(', ')}</p>` : ''}
+        ${cambios.length ? `<div class="tabla-wrap" style="max-height:300px;margin-top:8px"><table><thead><tr><th>Producto</th><th>Categoría</th><th>Visible</th></tr></thead><tbody>
+          ${cambios.map(c => `<tr><td class="pequeno">${esc(c.nombre)}</td><td class="pequeno">${c.categoria ? esc(c.antes) + ' → <b>' + esc(c.categoria) + '</b>' : '<span class="muted">sin cambio</span>'}</td><td class="pequeno">${c.visible !== undefined ? (c.visAntes ? 'SI' : 'NO') + ' → <b>' + (c.visible ? 'SI' : 'NO') + '</b>' : ''}</td></tr>`).join('')}</tbody></table></div>
+          <p><button class="btn ok bloque" onclick="App.aplicarClasificacion()">Aplicar ${cambios.length} cambios</button></p>` : '<p class="estado e-verde">No hay diferencias con el catálogo actual.</p>'}`;
+    });
+  }
+  async function aplicarClasificacion() {
+    const items = (S.clasifCambios || []).map(c => ({ id: c.id, categoria: c.categoria, visible: c.visible }));
+    await intentar(async () => {
+      const r = await api('actualizarClasificacion', { items });
+      cerrarModal(); toast(r.cambios + ' productos actualizados.'); S.catTs = 0; S.clasifCambios = null; vCatAdmin(true);
+    });
+  }
+
+  function borrarFotosForm() {
+    const n = S.admin.productos.filter(p => p.tiene_foto).length;
+    modal(`<h2>Borrar todas las fotos</h2><p>Se borrarán las fotos de <b>${n}</b> productos. Esta acción no se puede deshacer; luego podrá subir fotos nuevas con la cámara o importarlas otra vez.</p>
+      <label>Para confirmar, escriba <b>BORRAR</b></label><input id="bfConf" autocomplete="off">
+      <div class="fila" style="margin-top:12px"><button class="btn peligro col" onclick="App.borrarFotos()">Borrar ${n} fotos</button><button class="btn sec col" onclick="App.cerrarModal()">Cancelar</button></div>`);
+  }
+  async function borrarFotos() {
+    const conf = $('#bfConf').value.trim().toUpperCase();
+    if (conf !== 'BORRAR') return toast('Escriba BORRAR para confirmar.', true);
+    await intentar(async () => {
+      const r = await api('borrarFotos', { confirmacion: 'BORRAR' });
+      try { Object.keys(localStorage).filter(k => k.startsWith('pd_foto_')).forEach(k => localStorage.removeItem(k)); } catch (e) {}
+      S.fotos = {}; S.catTs = 0; cerrarModal(); toast(r.borradas + ' fotos borradas.'); vCatAdmin(true);
+    });
+  }
+
   function importarFotosForm() {
     modal(`<h2>Importar fotos desde planilla</h2>
       <p class="muted">Seleccione las planillas oficiales con imágenes (Farmacia y/o Bodega Central). Cada imagen se asigna a los productos AVIS de su fila.</p>
@@ -780,6 +910,7 @@
       puede('PEDIR') ? c('mis', '📋 Mis pedidos', 'Estado de mis solicitudes.') : '',
       puede('PLAZOS') ? c('plazos', '⏰ Plazos de pedido', 'Fechas y horas límite para que las TONS soliciten.') : '',
       puede('REPORTES') ? c('reportes', '📈 Consumo y cumplimiento', 'Quién pide en plazo, qué se consume y por box.') : '',
+      puede('REPORTES') || puede('CORTE') ? c('consolidado', '📋 Consolidado de pedidos', 'Lo solicitado y entregado por la app, en el orden de las planillas oficiales, para descargar.') : '',
       esAdmin() ? c('usuarios', '👥 Usuarios y permisos', 'Accesos, vigencia de contratos, permisos de la encargada de bodega.') : '',
       esAdmin() ? c('config', '⚙️ Configuración', 'Correos de Droguería y Bodega Central, % de seguridad, modo de plazos.') : '',
       c('perfil', '👤 Mi perfil', 'Cambiar clave, instalar la app, cerrar sesión.')].join(''));
@@ -819,6 +950,66 @@
       <div class="fila" style="margin-top:12px"><button class="btn ok col" onclick="App.guardarPlazo('${id}')">Guardar</button><button class="btn sec col" onclick="App.cerrarModal()">Cancelar</button></div>`);
   }
   async function eliminarPlazo(id) { if (!confirm('¿Quitar este plazo? Si ya tiene solicitudes, se conserva en el historial como inactivo.')) return; await intentar(async () => { S.plazos = await api('eliminarPlazo', { id }); pintarPlazos(); }); }
+
+  /* ================= Consolidado de lo solicitado y entregado (sin AVIS) ================= */
+  function vConsolidado() {
+    const h = new Date(), f = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    V(`<div class="tarjeta"><p class="muted">Suma de lo que las TONS solicitaron y bodega entregó por la app, ordenado como las planillas oficiales y en la unidad de cada planilla. No usa AVIS.</p>
+      <div class="fila"><div class="col"><label>Desde</label><input type="date" id="coD" value="${S.coD || f(new Date(h.getFullYear(), h.getMonth(), 1))}"></div><div class="col"><label>Hasta</label><input type="date" id="coH" value="${S.coH || f(h)}"></div>
+      <div style="align-self:flex-end"><button class="btn" onclick="App.cargarConsolidado()">Ver consolidado</button></div></div></div><div id="coOut"></div>`);
+    cargarConsolidado();
+  }
+  async function cargarConsolidado() {
+    S.coD = $('#coD').value; S.coH = $('#coH').value;
+    $('#coOut').innerHTML = '<div class="vacio"><div class="spinner"></div></div>';
+    await intentar(async () => { S.conso = await api('consolidado', { desde: S.coD, hasta: S.coH }, { silencioso: true }); pintarConsolidado(); });
+  }
+  function pintarConsolidado() {
+    const c = S.conso, tab = S.filtro.coTab || 'FARMACIA', solo = S.filtro.coSolo !== false;
+    const n = pl => c.items.filter(i => i.planilla === pl && (i.solicitado || i.entregado)).length;
+    let filas = '', sec = null;
+    if (tab !== 'OTROS') c.items.filter(i => i.planilla === tab).forEach(i => {
+      if (tab === 'BODEGA' && i.seccion !== sec && (!solo || c.items.some(x => x.planilla === 'BODEGA' && x.seccion === i.seccion && (x.solicitado || x.entregado)))) { sec = i.seccion; filas += `<tr class="seccion"><td colspan="5">${esc(sec)}</td></tr>`; }
+      if (solo && !i.solicitado && !i.entregado) return;
+      const det = i.productos_avis.map(p => `${p.nombre}: solicitado ${p.solicitado}, entregado ${p.entregado}${p.factor !== 1 ? ' (÷' + p.factor + ')' : ''} · ${p.personas.join(', ')}`).join('\n');
+      filas += `<tr><td title="${esc(det)}">${esc(i.producto_planilla)}</td><td>${esc(i.unidad)}</td><td class="num">${num(i.solicitado)}</td><td class="num"><b>${num(i.entregado)}</b></td><td class="num">${i.solicitudes || ''}</td></tr>`;
+    });
+    $('#coOut').innerHTML = `<div class="tarjeta"><div class="fila entre"><b>${c.total_solicitudes} solicitudes del ${fecha(c.desde)} al ${fecha(c.hasta)}</b>
+        <span class="fila"><button class="btn sec chico" onclick="App.descargarConsolidado('FARMACIA')">⬇ Planilla oficial Farmacia</button><button class="btn sec chico" onclick="App.descargarConsolidado('BODEGA')">⬇ Planilla oficial Bodega Central</button><button class="btn sec chico" onclick="App.descargarConsolidadoDetalle()">⬇ Detalle (Excel)</button></span></div>
+        <label class="check pequeno" style="margin:6px 0 0"><input type="checkbox" id="coBase" ${S.filtro.coBase === 'SOLICITADO' ? 'checked' : ''} onchange="App.filtrar('coBase', this.checked ? 'SOLICITADO' : 'ENTREGADO')"> En la planilla oficial, poner como consumo lo <b>solicitado</b> (por defecto se pone lo <b>entregado</b>)</label></div>
+      <div class="chips" style="margin-bottom:8px"><button class="chip ${tab === 'FARMACIA' ? 'activo' : ''}" onclick="App.filtrar('coTab','FARMACIA')">Farmacia / Droguería (${n('FARMACIA')})</button>
+        <button class="chip ${tab === 'BODEGA' ? 'activo' : ''}" onclick="App.filtrar('coTab','BODEGA')">Bodega Central (${n('BODEGA')})</button>
+        <button class="chip ${tab === 'OTROS' ? 'activo' : ''}" onclick="App.filtrar('coTab','OTROS')">Sin planilla (${c.sin_planilla.length})</button>
+        <button class="chip ${solo ? 'activo' : ''}" onclick="App.filtrar('coSolo', ${!solo})">Solo con movimiento</button></div>
+      ${tab === 'OTROS' ? `<div class="tarjeta">${c.sin_planilla.map(x => `<div class="item-sol"><span>${esc(x.nombre)}</span><span>solicitado ${num(x.solicitado)} · entregado <b>${num(x.entregado)}</b></span></div>`).join('') || '<p class="muted">Ninguno.</p>'}</div>` :
+      `<div class="tabla-wrap"><table><thead><tr><th>Producto (planilla oficial)</th><th>Unidad</th><th class="num">Solicitado</th><th class="num">Entregado</th><th class="num">N° solicitudes</th></tr></thead><tbody>${filas || '<tr><td colspan="5" class="muted">Sin movimiento en el período.</td></tr>'}</tbody></table></div>`}`;
+  }
+  function bajarB64(b64, nombre, tipo) {
+    const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([u], { type: tipo })); a.download = nombre; document.body.appendChild(a); a.click(); a.remove();
+  }
+  async function descargarConsolidado(pl) {
+    await intentar(async () => {
+      const r = await api('consolidadoPlanilla', { planilla: pl, desde: S.coD, hasta: S.coH, base: S.filtro.coBase || 'ENTREGADO' });
+      bajarB64(r.xlsx, r.nombre + '.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      setTimeout(() => bajarB64(r.pdf, r.nombre + '.pdf', 'application/pdf'), 600);
+      toast('Planilla descargada (Excel y PDF).');
+    });
+  }
+  async function descargarConsolidadoDetalle() {
+    await intentar(async () => {
+      await cargarXLSX();
+      const c = S.conso, wb = XLSX.utils.book_new();
+      ['FARMACIA', 'BODEGA'].forEach(pl => {
+        const filas = [['Sección', 'Producto (planilla oficial)', 'Unidad planilla', 'Solicitado', 'Entregado', 'N° solicitudes', 'Productos AVIS incluidos']]
+          .concat(c.items.filter(i => i.planilla === pl && (i.solicitado || i.entregado)).map(i => [i.seccion, i.producto_planilla, i.unidad, i.solicitado, i.entregado, i.solicitudes, i.productos_avis.map(p => p.nombre).join(' | ')]));
+        const ws = XLSX.utils.aoa_to_sheet(filas); ws['!cols'] = [{ wch: 18 }, { wch: 48 }, { wch: 12 }, { wch: 11 }, { wch: 11 }, { wch: 13 }, { wch: 60 }];
+        XLSX.utils.book_append_sheet(wb, ws, pl === 'FARMACIA' ? 'Farmacia' : 'Bodega Central');
+      });
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Producto AVIS', 'Solicitado', 'Entregado']].concat(c.sin_planilla.map(x => [x.nombre, x.solicitado, x.entregado]))), 'Sin planilla');
+      XLSX.writeFile(wb, 'CONSOLIDADO_APP_' + c.desde + '_al_' + c.hasta + '.xlsx');
+    });
+  }
 
   /* ================= Reporte de consumo y cumplimiento ================= */
   async function vReportes() {
@@ -891,17 +1082,17 @@
   function categoria(c) { S.cat = c; vCatalogo(); }
   function filtrar(k, v) {
     S.filtro[k] = v;
-    ({ bandeja: vBandeja, corteTab: pintarCorte, soloPedido: pintarCorte, recep: pintarRecepcion, cat: () => vCatAdmin(), usu: pintarUsuarios })[k]();
+    ({ bandeja: vBandeja, corteTab: pintarCorte, soloPedido: pintarCorte, recep: pintarRecepcion, cat: () => vCatAdmin(), usu: pintarUsuarios, coTab: pintarConsolidado, coSolo: pintarConsolidado, coBase: () => {} })[k]();
   }
   async function instalarApp() { if (!S.instalar) return; S.instalar.prompt(); await S.instalar.userChoice; S.instalar = null; render(); }
 
-  const VISTAS = { catalogo: vCatalogo, carrito: vCarrito, mis: vMis, perfil: vPerfil, bandeja: vBandeja, corte: vCorte, recepcion: vRecepcion, catadmin: () => vCatAdmin(), usuarios: vUsuarios, config: vConfig, mas: vMas, plazos: vPlazos, reportes: vReportes };
+  const VISTAS = { catalogo: vCatalogo, carrito: vCarrito, mis: vMis, perfil: vPerfil, bandeja: vBandeja, corte: vCorte, recepcion: vRecepcion, catadmin: () => vCatAdmin(), usuarios: vUsuarios, config: vConfig, mas: vMas, plazos: vPlazos, reportes: vReportes, consolidado: vConsolidado };
 
   window.App = { login, logout, cambiarClave, ir, refrescar, buscar, buscarAdmin, categoria, filtrar, sumar, fijar, verFoto, cerrarModal, vaciarCarrito, enviarSolicitud, anular,
     atender, confirmarAtencion, rechazar: id => { if (confirm('¿Rechazar toda la solicitud?')) confirmarAtencion(id, true); }, marcarAvis,
     importarAvis, crearCorte, abrirCorte, editarCorte, guardarCorte: () => guardarCorte(false), conformarCorte, reabrirCorte, eliminarCorte, salirCorte, enviarCorteForm, enviarCorte,
     leerDespacho, crearRecepcion, abrirRecepcion, editarRecep, guardarRecepcion: () => guardarRecepcion(false), cerrarRecepcion, salirRecepcion, enviarRecepcionForm, enviarRecepcion,
-    editarProducto, filasPlanilla: () => filasPlanilla(), guardarProducto, subirFoto, quitarFoto, importarFotosForm, leerFotosPlanilla, cargarFotosPlanilla, editarUsuario, tipoContrato, guardarUsuario, resetClave, guardarConfig, instalarApp,
+    editarProducto, filasPlanilla: () => filasPlanilla(), guardarProducto, subirFoto, quitarFoto, importarFotosForm, leerFotosPlanilla, cargarFotosPlanilla, descargarClasificacion, importarClasifForm, leerClasificacion, aplicarClasificacion, borrarFotosForm, borrarFotos, cargarConsolidado, descargarConsolidado, descargarConsolidadoDetalle, editarUsuario, tipoContrato, guardarUsuario, resetClave, guardarConfig, instalarApp,
     guardarPlazo: id => guardarPlazo(typeof id === 'string' ? id : ''), editarPlazo, eliminarPlazo, generarReporte, detalleConsumo, descargarCSV };
 
   window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); S.instalar = e; if (S.vista === 'perfil') render(); });
