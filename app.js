@@ -190,14 +190,35 @@
   function pintarBannerPlazo() { const b = $('#bannerPlazo'); if (b) b.innerHTML = bannerPlazo(); }
 
   function normal(s) { return String(s).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, ''); }
+  /* Unidad de pedido: los productos que la planilla pide por caja se piden por caja (se guarda en unidades AVIS). */
+  const esPack = p => p && p.factor > 1 && p.unidad_pack;
+  const modoDe = id => { const c = S.carrito[id]; if (c) return c.modo || 'unidad'; const p = S.catalogo.find(x => x.id === id); return esPack(p) ? ((S.modos || {})[id] || 'pack') : 'unidad'; };
+  const divisor = (p, modo) => modo === 'pack' && esPack(p) ? p.factor : 1;
+  function valorMostrado(id) { const c = S.carrito[id]; if (!c) return 0; return Math.round(c.cantidad / divisor(c.p, c.modo || 'unidad') * 100) / 100; }
+  function txtCant(n, it) { if (n === null || n === undefined) return ''; return it && it.factor > 1 && it.unidad_pack ? `${n} UD <span class="muted">(${Math.round(n / it.factor * 100) / 100} ${esc(it.unidad_pack)})</span>` : String(n); }
+  function cambiarModo(id) {
+    const p = S.catalogo.find(x => x.id === id) || (S.carrito[id] && S.carrito[id].p); if (!esPack(p)) return;
+    const nuevo = modoDe(id) === 'pack' ? 'unidad' : 'pack';
+    S.modos = S.modos || {}; S.modos[id] = nuevo;
+    const c = S.carrito[id];
+    if (c) { c.modo = nuevo; if (nuevo === 'pack') c.cantidad = Math.ceil(c.cantidad / p.factor) * p.factor; LS.set('carrito', S.carrito); }
+    if (S.vista === 'catalogo') { pintarLista(); pintarCarroFlotante(); } else render();
+  }
+  function lineaUnidad(p) {
+    if (!esPack(p)) return '';
+    const m = modoDe(p.id);
+    return m === 'pack' ? `<small style="color:var(--azul-2)">Se pide por <b>${esc(p.unidad_pack)}</b> (1 = ${p.factor} UD) · <a href="#" onclick="event.preventDefault();App.cambiarModo('${p.id}')">pedir por unidad</a></small>`
+      : `<small style="color:var(--amarillo)">Pidiendo por <b>unidad</b> · <a href="#" onclick="event.preventDefault();App.cambiarModo('${p.id}')">pedir por ${esc(p.unidad_pack)}</a></small>`;
+  }
+
   function pintarLista() {
     const q = normal(S.q).split(/\s+/).filter(Boolean);
     const l = S.catalogo.filter(p => (S.cat === 'Todas' || p.categoria === S.cat) && q.every(w => normal(p.nombre).includes(w)));
     const el = $('#lista'); if (!el) return;
     el.innerHTML = l.length ? l.slice(0, 250).map(p => {
-      const c = S.carrito[p.id] ? S.carrito[p.id].cantidad : 0;
+      const c = valorMostrado(p.id);
       return `<div class="producto">${p.foto ? `<button class="foto-btn" onclick="App.verFoto('${p.id}')" title="Ver foto">📷</button>` : ''}
-        <div class="nom">${esc(p.nombre)}<small>${esc(p.categoria)}</small></div>
+        <div class="nom">${esc(p.nombre)}<small>${esc(p.categoria)}</small>${lineaUnidad(p)}</div>
         <div class="stepper"><button onclick="App.sumar('${p.id}',-1)" aria-label="Menos">−</button><input inputmode="numeric" value="${c || ''}" placeholder="0" onchange="App.fijar('${p.id}',this.value)"><button onclick="App.sumar('${p.id}',1)" aria-label="Más">+</button></div></div>`;
     }).join('') + (l.length > 250 ? '<p class="muted">Afine la búsqueda para ver más productos.</p>' : '') : '<div class="vacio">No hay productos con ese criterio.</div>';
   }
@@ -210,12 +231,13 @@
   }
   function fijar(id, v) {
     const p = S.catalogo.find(x => x.id === id) || (S.carrito[id] && S.carrito[id].p);
-    let c = Math.max(0, Math.min(100000, parseInt(v, 10) || 0));
-    if (c) S.carrito[id] = { p: { id: p.id, nombre: p.nombre, categoria: p.categoria, foto: p.foto }, cantidad: c }; else delete S.carrito[id];
+    const modo = modoDe(id);
+    let c = Math.max(0, Math.min(100000, parseInt(v, 10) || 0)) * divisor(p, modo);
+    if (c) S.carrito[id] = { p: { id: p.id, nombre: p.nombre, categoria: p.categoria, foto: p.foto, factor: p.factor || 1, unidad_pack: p.unidad_pack || '' }, cantidad: c, modo }; else delete S.carrito[id];
     LS.set('carrito', S.carrito);
     if (S.vista === 'catalogo') { pintarLista(); pintarCarroFlotante(); } else render();
   }
-  function sumar(id, d) { fijar(id, (S.carrito[id] ? S.carrito[id].cantidad : 0) + d); }
+  function sumar(id, d) { fijar(id, Math.round(valorMostrado(id)) + d); }
   async function verFoto(id) {
     const p = S.catalogo.find(x => x.id === id) || { nombre: '' };
     modal(`<h2>${esc(p.nombre)}</h2><img class="foto" id="fotoImg" alt="Foto del producto"><p><button class="btn sec bloque" onclick="App.cerrarModal()">Cerrar</button></p>`);
@@ -231,9 +253,9 @@
     const boxes = (S.inicio && S.inicio.boxes) || [];
     const pz = S.inicio && S.inicio.plazo, bloqueo = pz && pz.control && pz.en_plazo === 'NO' && pz.modo === 'BLOQUEAR';
     V(`<div id="bannerPlazo">${bannerPlazo()}</div><div class="tarjeta"><h2>Productos (${items.length})</h2>
-      ${items.map(i => `<div class="producto" style="box-shadow:none;border:1px solid var(--borde)"><div class="nom">${esc(i.p.nombre)}</div>
-        <div class="stepper"><button onclick="App.sumar('${i.p.id}',-1)">−</button><input inputmode="numeric" value="${i.cantidad}" onchange="App.fijar('${i.p.id}',this.value)"><button onclick="App.sumar('${i.p.id}',1)">+</button></div></div>`).join('')}
-      <p class="muted pequeño">Las cantidades son en la unidad con que bodega registra en AVIS (unidades sueltas: guantes, tubos, tórulas).</p></div>
+      ${items.map(i => `<div class="producto" style="box-shadow:none;border:1px solid var(--borde)"><div class="nom">${esc(i.p.nombre)}${lineaUnidad(i.p)}${(i.modo || 'unidad') === 'pack' ? `<small>= ${i.cantidad} UD para bodega</small>` : ''}</div>
+        <div class="stepper"><button onclick="App.sumar('${i.p.id}',-1)">−</button><input inputmode="numeric" value="${valorMostrado(i.p.id)}" onchange="App.fijar('${i.p.id}',this.value)"><button onclick="App.sumar('${i.p.id}',1)">+</button></div></div>`).join('')}
+      <p class="muted pequeno">Los productos marcados “Se pide por CJ / CAJAS” se piden por caja; el resto, por unidad. Bodega recibe la cantidad en unidades AVIS.</p></div>
       <div class="tarjeta"><h2>Datos de la solicitud</h2>
         <label>Lugar de entrega</label><select id="sbox">${boxes.map(b => `<option>${esc(b)}</option>`).join('')}<option value="">Otro / sin especificar</option></select>
         <label>Prioridad</label><select id="sprio">${bloqueo ? '' : '<option value="NORMAL">Normal</option>'}<option value="URGENTE">Urgente (se necesita hoy)</option></select>
@@ -257,7 +279,7 @@
     return `<div class="tarjeta"><div class="fila entre"><b>${esc(s.id)}</b><span class="estado ${COLOR_EST[s.estado] || 'e-gris'}">${esc(s.estado)}</span></div>
       <div class="muted">${fecha(s.fecha, true)}${admin ? ' · <b>' + esc(s.nombre) + '</b>' : ''}${s.box ? ' · ' + esc(s.box) : ''}${s.prioridad === 'URGENTE' ? ' · <span class="estado e-rojo">URGENTE</span>' : ''}${s.en_plazo === 'SI' ? ' · <span class="estado e-verde">En plazo</span>' : (s.en_plazo === 'NO' ? ' · <span class="estado e-amarillo">Fuera de plazo</span>' : '')}</div>
       ${s.comentario ? `<p class="muted">“${esc(s.comentario)}”</p>` : ''}
-      ${s.items.map(i => `<div class="item-sol"><span>${esc(i.nombre)}</span><span><b>${i.solicitada}</b>${i.entregada !== null ? ' → entregado ' + i.entregada : ''}</span></div>`).join('')}
+      ${s.items.map(i => `<div class="item-sol"><span>${esc(i.nombre)}</span><span><b>${txtCant(i.solicitada, i)}</b>${i.entregada !== null ? ' → entregado ' + txtCant(i.entregada, i) : ''}</span></div>`).join('')}
       ${s.fecha_atencion ? `<p class="muted pequeno">Atendida por ${esc(s.atendido_por)} el ${fecha(s.fecha_atencion, true)}${s.obs_bodega ? ': ' + esc(s.obs_bodega) : ''}</p>` : ''}
       ${admin ? botonesBandeja(s) : (s.estado === 'PENDIENTE' ? `<button class="btn peligro chico" onclick="App.anular('${s.id}')">Anular solicitud</button>` : '')}</div>`;
   }
@@ -289,6 +311,7 @@
     if (s.estado === 'PENDIENTE') h += `<button class="btn chico" onclick="App.atender('${s.id}')">Atender / entregar</button>`;
     if ((s.estado === 'ENTREGADA' || s.estado === 'PARCIAL') && s.avis_registrado !== 'SI') h += `<button class="btn ok chico" onclick="App.marcarAvis('${s.id}')">✓ Ya rebajé en AVIS</button><span class="estado e-amarillo">Falta rebajar en AVIS</span>`;
     if (s.avis_registrado === 'SI') h += '<span class="estado e-verde">Rebajado en AVIS</span>';
+    if (esAdmin()) h += `<button class="btn peligro chico" style="margin-left:auto" title="Eliminar solicitud" onclick="App.eliminarSolicitud('${s.id}')">🗑</button>`;
     return h + '</div>';
   }
   async function vBandeja() {
@@ -313,7 +336,7 @@
     const s = S.bandeja.find(x => x.id === id);
     modal(`<h2>Atender ${esc(s.id)}</h2><p class="muted">${esc(s.nombre)} · ${fecha(s.fecha, true)}${s.box ? ' · ' + esc(s.box) : ''}</p>
       <p class="muted pequeno">Indique la cantidad realmente entregada de cada producto (0 si no hay).</p>
-      ${s.items.map((i, k) => `<div class="producto" style="box-shadow:none;border:1px solid var(--borde)"><div class="nom">${esc(i.nombre)}<small>Solicitado: ${i.solicitada}</small></div>
+      ${s.items.map((i, k) => `<div class="producto" style="box-shadow:none;border:1px solid var(--borde)"><div class="nom">${esc(i.nombre)}<small>Solicitado: ${txtCant(i.solicitada, i)}${i.factor > 1 ? ' · ingrese lo entregado en UD (unidades AVIS)' : ''}</small></div>
         <input class="num" style="width:90px;text-align:right" type="number" min="0" step="1" id="ent${k}" value="${i.solicitada}"></div>`).join('')}
       <label>Observación para quien solicitó (opcional)</label><input type="text" id="aobs" maxlength="500" placeholder="Ej: no queda stock de vinilo M">
       <label class="check"><input type="checkbox" id="aavis"> Ya rebajé esta entrega en AVIS (módulo farmacia)</label>
@@ -328,6 +351,10 @@
       cerrarModal(); toast('Solicitud ' + id + ': ' + r.estado); S.inicio = null; cargarInicio(); vBandeja();
     });
   }
+  async function eliminarSolicitud(id) {
+    if (!confirm('¿Eliminar definitivamente la solicitud ' + id + '? Se borra también de los reportes y consolidados.')) return;
+    await intentar(async () => { await api('eliminarSolicitudes', { ids: [id], confirmacion: 'BORRAR' }); toast('Solicitud eliminada.'); S.inicio = null; cargarInicio(); vBandeja(); });
+  }
   async function marcarAvis(id) { await intentar(async () => { await api('marcarAvis', { id }); toast('Marcada como rebajada en AVIS.'); S.inicio = null; cargarInicio(); vBandeja(); }); }
 
   /* ================= ADMIN: corte ================= */
@@ -339,12 +366,12 @@
       if (S.vista !== 'corte') return;
       const ult = imps[0];
       V(`<div class="tarjeta"><h2>1. Importar informe AVIS del período</h2>
-        <p class="muted">En AVIS abra <b>Reportes → Farmacia → Informe Completo de Productos</b> de la bodega dental, seleccione el período, presione <b>Ctrl+A</b> y <b>Ctrl+C</b>, y pegue aquí. También puede subir el PDF del informe.</p>
+        <p class="muted">En AVIS abra <b>Reportes → Farmacia → Informe Completo de Productos</b> de la bodega dental, seleccione el período, presione <b>Ctrl+A</b> y <b>Ctrl+C</b>, y pegue aquí. También puede subir el informe exportado. Solo se usan los productos de las dos planillas oficiales; el resto se omite.</p>
         <textarea id="avisTxt" placeholder="Pegue aquí el informe completo de AVIS…"></textarea>
         <div class="fila"><div class="col"><label>O suba el informe exportado (Excel, PDF o CSV)</label><input type="file" id="avisPdf" accept=".xls,.xlsx,.csv,.htm,.html,.pdf,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div></div>
         <div class="fila"><div class="col"><label>Desde (si no viene en el informe)</label><input type="date" id="avDesde"></div><div class="col"><label>Hasta</label><input type="date" id="avHasta"></div></div>
         <p><button class="btn" onclick="App.importarAvis()">Importar informe</button> <button class="btn sec" onclick="App.ir('consolidado')">📋 Ver consolidado de la app (sin AVIS)</button></p>
-        ${ult ? `<p class="muted">Último informe: ${fecha(ult.desde)} al ${fecha(ult.hasta)} · ${ult.n_productos} productos · importado ${fecha(ult.fecha, true)} por ${esc(ult.usuario)}${ult.n_sin_catalogo ? ` · <span class="estado e-amarillo">${ult.n_sin_catalogo} productos nuevos agregados al catálogo</span>` : ''}</p>` : ''}</div>
+        ${ult ? `<p class="muted">Último informe: ${fecha(ult.desde)} al ${fecha(ult.hasta)} · ${ult.n_productos} productos · importado ${fecha(ult.fecha, true)} por ${esc(ult.usuario)}${ult.n_sin_catalogo ? ` · ${ult.n_sin_catalogo} sin planilla omitidos` : ''}</p>` : ''}</div>
         <div class="tarjeta"><h2>2. Generar corte (borrador editable)</h2>
         ${ult ? `<div class="fila"><div class="col"><label>Informe AVIS</label><select id="ctImp">${imps.map(i => `<option value="${i.id}">${fecha(i.desde)} al ${fecha(i.hasta)} (${i.id})</option>`).join('')}</select></div>
           <div class="col"><label>% de seguridad sobre el consumo</label><input type="number" id="ctSeg" min="0" max="300" placeholder="Según configuración (20 %)"></div></div>
@@ -367,7 +394,10 @@
       const r = await api('importarAvis', d);
       modal(`<h2>Informe importado</h2><p>Período <b>${fecha(r.desde)} al ${fecha(r.hasta)}</b>${r.bodega ? '<br><span class="muted">' + esc(r.bodega) + '</span>' : ''}</p>
         <div class="kpis"><div class="kpi"><b>${r.filas}</b><span>filas leídas</span></div><div class="kpi"><b>${r.con_consumo}</b><span>con consumo</span></div><div class="kpi"><b>${r.con_saldo}</b><span>con saldo</span></div></div>
-        ${r.nuevos && r.nuevos.length ? `<p><span class="estado e-amarillo">${r.nuevos.length} productos no estaban en el catálogo</span> y se agregaron ocultos para revisión (Catálogo → filtro "Revisar"):</p><p class="muted pequeno">${r.nuevos.map(esc).join('<br>')}</p>` : '<p class="estado e-verde">Todos los nombres coinciden con el catálogo.</p>'}
+        <p><span class="estado e-verde">${r.usados} productos de las planillas oficiales</span> quedaron registrados para el corte.</p>
+        ${r.omitidos && r.omitidos.length ? `<details><summary class="muted">${r.omitidos.length} productos de AVIS no están en las planillas y se omitieron${r.omitidos.some(x => x.consumo > 0) ? ` (${r.omitidos.filter(x => x.consumo > 0).length} con consumo)` : ''}</summary>
+          <p class="muted pequeno">No entran al catálogo ni al corte. Si alguno es un nombre AVIS nuevo de un insumo de las planillas, agréguelo en Catálogo → + Nuevo con su fila y vuelva a importar el informe.</p>
+          <p class="muted pequeno">${r.omitidos.map(x => esc(x.nombre) + (x.consumo > 0 ? ' · <b>consumo ' + num(x.consumo) + '</b>' : '')).join('<br>')}</p></details>` : ''}
         ${r.no_leidas && r.no_leidas.length ? `<p class="muted">Líneas no reconocidas (revise si falta algo):</p><p class="muted pequeno">${r.no_leidas.map(esc).join('<br>')}</p>` : ''}
         <p><button class="btn bloque" onclick="App.cerrarModal();App.ir('corte')">Continuar</button></p>`);
     });
@@ -448,11 +478,8 @@
       <div class="chips" style="margin-bottom:8px">
         <button class="chip ${tab === 'FARMACIA' ? 'activo' : ''}" onclick="App.filtrar('corteTab','FARMACIA')">Farmacia / Droguería (${tot('FARMACIA')} con pedido)</button>
         <button class="chip ${tab === 'BODEGA' ? 'activo' : ''}" onclick="App.filtrar('corteTab','BODEGA')">Bodega Central (${tot('BODEGA')} con pedido)</button>
-        <button class="chip ${tab === 'OTROS' ? 'activo' : ''}" onclick="App.filtrar('corteTab','OTROS')">Sin planilla (${c.sin_planilla.length})</button>
         <button class="chip ${soloPed ? 'activo' : ''}" onclick="App.filtrar('soloPedido',${!soloPed})">Solo con pedido</button></div>
-      ${tab === 'OTROS' ? `<div class="tarjeta"><p class="muted">Productos con consumo en AVIS que no tienen fila en ninguna de las dos planillas. Si corresponde pedirlos, asígneles planilla y fila en Catálogo.</p>
-        ${c.sin_planilla.map(x => `<div class="item-sol"><span>${esc(x.nombre)}</span><span>consumo ${num(x.consumo)} · saldo ${num(x.saldo)}</span></div>`).join('') || '<p class="muted">Ninguno.</p>'}</div>` :
-      `<div class="leyenda"><span><span class="punto p-verde"></span> AVIS y app coinciden</span><span><span class="punto p-amarillo"></span> diferencia ≤20 %</span><span><span class="punto p-rojo"></span> diferencia >20 %</span><span><span class="punto p-gris"></span> sin datos de la app</span><span>Mantenga el dedo o el mouse sobre el producto para ver los nombres AVIS que suma.</span></div>
+      ${`<div class="leyenda"><span><span class="punto p-verde"></span> AVIS y app coinciden</span><span><span class="punto p-amarillo"></span> diferencia ≤20 %</span><span><span class="punto p-rojo"></span> diferencia >20 %</span><span><span class="punto p-gris"></span> sin datos de la app</span><span>Mantenga el dedo o el mouse sobre el producto para ver los nombres AVIS que suma.</span></div>
       <div class="tabla-wrap"><table><thead><tr><th>Producto (planilla oficial)</th><th>Unidad</th><th class="num">Consumo</th><th class="num">Saldo</th><th class="num">Sugerido</th><th class="num">Pedido</th><th>Entregado app</th><th>Vence</th><th>Observación</th></tr></thead><tbody>${filas}</tbody></table></div>`}`);
   }
   function editarCorte(k, f, v) {
@@ -602,15 +629,19 @@
     V(`<div class="buscador"><div class="fila"><input class="col" type="search" id="qa" placeholder="Buscar por nombre AVIS o código…" value="${esc(S.filtro.qa || '')}" oninput="App.buscarAdmin(this.value)">
       <button class="btn chico" onclick="App.editarProducto('')">+ Nuevo</button><button class="btn sec chico" onclick="App.importarFotosForm()">⬆ Importar fotos desde planilla</button></div>
       <div class="fila" style="margin-top:6px"><button class="btn sec chico" onclick="App.descargarClasificacion()">⬇ Descargar clasificación</button><button class="btn sec chico" onclick="App.importarClasifForm()">⬆ Importar clasificación</button><button class="btn peligro chico" onclick="App.borrarFotosForm()">🗑 Borrar todas las fotos</button></div>
-      <div class="chips" style="margin-top:8px">${[['VISIBLES', 'Visibles para TONS'], ['OCULTOS', 'Ocultos'], ['SINFOTO', 'Visibles sin foto'], ['FARMACIA', 'Planilla Farmacia'], ['BODEGA', 'Planilla Bodega'], ['NINGUNA', 'Sin planilla'], ['REVISAR', 'Revisar'], ['TODOS', 'Todos']].map(x =>
-        `<button class="chip ${f === x[0] ? 'activo' : ''}" onclick="App.filtrar('cat','${x[0]}')">${x[1]}</button>`).join('')}</div></div><div id="listaAdmin"></div>`);
+      <div class="chips" style="margin-top:8px">${[['VISIBLES', 'Visibles para TONS'], ['OCULTOS', 'Ocultos'], ['SINFOTO', 'Visibles sin foto'], ['FARMACIA', 'Planilla Farmacia'], ['BODEGA', 'Planilla Bodega'], ['REVISAR', 'Revisar'], ['TODOS', 'Todos']].map(x =>
+        `<button class="chip ${f === x[0] ? 'activo' : ''}" onclick="App.filtrar('cat','${x[0]}')">${x[1]}</button>`).join('')}</div></div>
+      ${esAdmin() && sinPlanilla().length ? `<div class="tarjeta" style="border-left:4px solid #e0a800"><b>${sinPlanilla().length} productos de AVIS no están en las planillas oficiales.</b>
+        <p class="muted pequeno">El catálogo debe contener solo los productos de las dos planillas de abastecimiento. Al quitarlos dejan de aparecer en la app; las solicitudes antiguas conservan su nombre.</p>
+        <button class="btn peligro chico" onclick="App.depurarCatalogoForm()">Quitar del catálogo</button></div>` : ''}
+      <div id="listaAdmin"></div>`);
     pintarCatAdmin();
   }
   function pintarCatAdmin() {
     const f = S.filtro.cat || 'VISIBLES', q = normal(S.filtro.qa || '').split(/\s+/).filter(Boolean);
     const l = S.admin.productos.filter(p => {
       if (f === 'VISIBLES' && !p.visible) return false; if (f === 'OCULTOS' && p.visible) return false; if (f === 'SINFOTO' && (!p.visible || p.tiene_foto)) return false;
-      if (['FARMACIA', 'BODEGA', 'NINGUNA'].includes(f) && p.planilla !== f) return false;
+      if (['FARMACIA', 'BODEGA'].includes(f) && p.planilla !== f) return false;
       if (f === 'REVISAR' && !(p.certeza && p.certeza !== 'ALTA') && !/revisar/i.test(p.nota)) return false;
       const t = normal(p.nombre_avis + ' ' + p.codigo_avis); return q.every(w => t.includes(w));
     });
@@ -621,13 +652,13 @@
       <label class="foto-btn" title="${p.tiene_foto ? 'Cambiar foto con la cámara' : 'Agregar foto con la cámara'}" onclick="event.stopPropagation()" style="display:grid;place-items:center;${p.tiene_foto ? '' : 'opacity:.55'}">📷<input type="file" accept="image/*" capture="environment" style="display:none" onchange="App.subirFoto('${p.id}',this.files[0],true)"></label></div>`).join('');
   }
   function editarProducto(id) {
-    const p = id ? S.admin.productos.find(x => x.id === id) : { id: '', nombre_avis: '', codigo_avis: '', categoria: 'Insumos generales', planilla: 'NINGUNA', fila: '', factor: 1, rol_mapeo: 'PRINCIPAL', visible: true, nota: '' };
+    const p = id ? S.admin.productos.find(x => x.id === id) : { id: '', nombre_avis: '', codigo_avis: '', categoria: 'Insumos generales', planilla: 'FARMACIA', fila: '', factor: 1, rol_mapeo: 'PRINCIPAL', visible: true, nota: '' };
     const cats = [...new Set(S.admin.productos.map(x => x.categoria))].sort();
     modal(`<h2>${id ? 'Editar producto' : 'Nuevo producto'}</h2>
       <label>Nombre exactamente como en AVIS</label><input id="pN" value="${esc(p.nombre_avis)}">
       <p class="muted pequeno">Debe ser idéntico al de AVIS para que calcen inventario, cortes y despachos.</p>
       <div class="fila"><div class="col"><label>Código AVIS</label><input id="pC" value="${esc(p.codigo_avis)}"></div><div class="col"><label>Categoría</label><input id="pCat" list="lcats" value="${esc(p.categoria)}"><datalist id="lcats">${cats.map(c => `<option>${esc(c)}</option>`).join('')}</datalist></div></div>
-      <div class="fila"><div class="col"><label>Planilla de pedido</label><select id="pPl" onchange="App.filasPlanilla()"><option value="NINGUNA">Ninguna</option><option value="FARMACIA">Farmacia / Droguería</option><option value="BODEGA">Bodega Central</option></select></div>
+      <div class="fila"><div class="col"><label>Planilla de pedido</label><select id="pPl" onchange="App.filasPlanilla()"><option value="FARMACIA">Farmacia / Droguería</option><option value="BODEGA">Bodega Central</option></select></div>
         <div class="col"><label>Rol en la fila</label><select id="pRol"><option value="PRINCIPAL">Principal</option><option value="ALTERNATIVO">Alternativo (también suma)</option></select></div></div>
       <label>Fila de la planilla</label><select id="pFi"></select>
       <label>Factor de conversión (unidades AVIS por unidad de la planilla)</label><input id="pFa" type="number" min="0.0001" step="any" value="${p.factor}">
@@ -639,13 +670,13 @@
         <label class="btn sec chico" style="margin:0">🖼 Elegir de galería<input type="file" accept="image/*" style="display:none" onchange="App.subirFoto('${p.id}',this.files[0])"></label>
         ${p.tiene_foto ? `<button class="btn peligro chico" onclick="App.quitarFoto('${p.id}')">Quitar foto</button>` : ''}</div>` : ''}
       <div class="fila" style="margin-top:14px"><button class="btn ok col" onclick="App.guardarProducto('${p.id}')">Guardar</button><button class="btn sec col" onclick="App.cerrarModal()">Cancelar</button></div>`);
-    $('#pPl').value = p.planilla; $('#pRol').value = p.rol_mapeo || 'PRINCIPAL'; filasPlanilla(p.fila);
+    $('#pPl').value = ['FARMACIA', 'BODEGA'].includes(p.planilla) ? p.planilla : 'FARMACIA'; $('#pRol').value = p.rol_mapeo || 'PRINCIPAL'; filasPlanilla(p.fila);
     if (id && p.tiene_foto) api('foto', { producto_id: id }, { silencioso: true }).then(r => { const el = $('#pFoto'); if (el && r.data) el.innerHTML = `<img class="foto" src="${r.data}" alt="">`; }).catch(() => {});
   }
   function filasPlanilla(sel) {
     const pl = $('#pPl').value, s = $('#pFi');
     const l = S.admin.filas.filter(f => f.planilla === pl);
-    s.innerHTML = pl === 'NINGUNA' ? '<option value="">—</option>' : l.map(f => `<option value="${f.fila}">Fila ${f.fila} · ${esc(f.seccion ? f.seccion + ' · ' : '')}${esc(f.producto_planilla)} (${esc(f.unidad_planilla)})</option>`).join('');
+    s.innerHTML = l.map(f => `<option value="${f.fila}">Fila ${f.fila} · ${esc(f.seccion ? f.seccion + ' · ' : '')}${esc(f.producto_planilla)} (${esc(f.unidad_planilla)})</option>`).join('');
     if (sel) s.value = sel;
   }
   async function guardarProducto(id) {
@@ -769,6 +800,22 @@
     });
   }
 
+  const sinPlanilla = () => (S.admin ? S.admin.productos : []).filter(p => !['FARMACIA', 'BODEGA'].includes(p.planilla) || p.fila === '' || !S.admin.filas.some(f => f.planilla === p.planilla && f.fila === Number(p.fila)));
+  function depurarCatalogoForm() {
+    const l = sinPlanilla();
+    modal(`<h2>Quitar productos sin planilla</h2><p>Se quitarán del catálogo <b>${l.length}</b> productos de AVIS que no tienen fila en la planilla de Farmacia / Droguería ni en la de Bodega Central, junto con sus fotos.</p>
+      <div class="tabla-wrap" style="max-height:260px"><p class="muted pequeno" style="margin:6px">${l.map(p => esc(p.nombre_avis) + (p.visible ? ' <span class="estado e-verde">visible</span>' : '')).join('<br>')}</p></div>
+      <p class="muted pequeno">Las solicitudes ya registradas conservan el nombre del producto. Si más adelante se necesita alguno, se agrega en Catálogo → + Nuevo con su planilla y fila.</p>
+      <label>Para confirmar, escriba <b>BORRAR</b></label><input id="dcConf" autocomplete="off">
+      <div class="fila" style="margin-top:12px"><button class="btn peligro col" onclick="App.depurarCatalogo()">Quitar ${l.length} productos</button><button class="btn sec col" onclick="App.cerrarModal()">Cancelar</button></div>`);
+  }
+  async function depurarCatalogo() {
+    if ($('#dcConf').value.trim().toUpperCase() !== 'BORRAR') return toast('Escriba BORRAR para confirmar.', true);
+    await intentar(async () => {
+      const r = await api('depurarCatalogo', { confirmacion: 'BORRAR' });
+      S.catTs = 0; cerrarModal(); toast(r.eliminados + ' productos quitados del catálogo.'); vCatAdmin(true);
+    });
+  }
   function borrarFotosForm() {
     const n = S.admin.productos.filter(p => p.tiene_foto).length;
     modal(`<h2>Borrar todas las fotos</h2><p>Se borrarán las fotos de <b>${n}</b> productos. Esta acción no se puede deshacer; luego podrá subir fotos nuevas con la cámara o importarlas otra vez.</p>
@@ -847,7 +894,7 @@
   async function vUsuarios() {
     V('<div class="vacio"><div class="spinner"></div></div>');
     await intentar(async () => {
-      const ru = await api('usuarios', {}, { silencioso: true }); S.usuarios = ru.usuarios; S.permisosNombres = ru.permisos;
+      const ru = await api('usuarios', {}, { silencioso: true }); S.usuarios = ru.usuarios; S.permisosNombres = ru.permisos; S.totalSolicitudes = ru.total_solicitudes;
       if (S.vista !== 'usuarios') return; pintarUsuarios();
     });
   }
@@ -877,6 +924,7 @@
       <p class="muted pequeno">Al llegar la fecha de término, el acceso se bloquea automáticamente. Los administradores reciben aviso por correo antes del vencimiento.</p>
       <label class="check"><input type="checkbox" id="uA" ${u.activo === 'SI' ? 'checked' : ''}> Usuario activo</label>
       <div class="fila" style="margin-top:10px"><button class="btn ok col" onclick="App.guardarUsuario('${u.id}')">Guardar</button>${id ? `<button class="btn sec col" onclick="App.resetClave('${u.id}')">Restablecer clave</button>` : ''}</div>
+      ${id && u.rol !== 'ADMIN' ? `<p><button class="btn peligro bloque" onclick="App.eliminarUsuarioForm('${u.id}')">🗑 Eliminar usuario</button></p>` : ''}
       <p><button class="btn sec bloque" onclick="App.cerrarModal()">Cancelar</button></p>`);
     $('#uRol').value = u.rol; $('#uT').value = u.tipo_contrato || 'Indefinido'; tipoContrato();
   }
@@ -895,6 +943,21 @@
     return `<h2>Acceso creado</h2><p>Entregue estos datos a <b>${esc(nombre)}</b>. Al ingresar se le pedirá crear su propia clave.</p>
       <div class="tarjeta" style="background:var(--azul-claro)"><p>Usuario: <b>${esc(usuario)}</b><br>Clave temporal: <b style="font-size:20px;letter-spacing:.05em">${esc(clave)}</b></p></div>
       <p><button class="btn bloque" onclick="App.cerrarModal()">Listo</button></p>`;
+  }
+  function eliminarUsuarioForm(id) {
+    const u = S.usuarios.find(x => x.id === id);
+    modal(`<h2>Eliminar usuario</h2><p>Se eliminará a <b>${esc(u.nombre)}</b> (${esc(u.usuario)}). Ya no podrá ingresar.</p>
+      <p class="muted pequeno">Si la persona solo terminó su contrato, es preferible desmarcar "Usuario activo" o dejar su fecha de término: así se conserva su historial.</p>
+      ${u.n_solicitudes ? `<label class="check"><input type="checkbox" id="euSol"> Borrar también sus <b>${u.n_solicitudes}</b> solicitudes (recomendado para usuarios de prueba)</label>` : ''}
+      <label>Para confirmar, escriba <b>BORRAR</b></label><input id="euConf" autocomplete="off">
+      <div class="fila" style="margin-top:12px"><button class="btn peligro col" onclick="App.eliminarUsuario('${id}')">Eliminar</button><button class="btn sec col" onclick="App.cerrarModal()">Cancelar</button></div>`);
+  }
+  async function eliminarUsuario(id) {
+    if ($('#euConf').value.trim().toUpperCase() !== 'BORRAR') return toast('Escriba BORRAR para confirmar.', true);
+    await intentar(async () => {
+      const r = await api('eliminarUsuario', { id, borrar_solicitudes: !!($('#euSol') && $('#euSol').checked) });
+      cerrarModal(); toast('Usuario ' + r.eliminado + ' eliminado' + (r.solicitudes_eliminadas ? ' junto con ' + r.solicitudes_eliminadas + ' solicitudes.' : '.')); vUsuarios();
+    });
   }
   async function resetClave(id) {
     const u = S.usuarios.find(x => x.id === id);
@@ -979,10 +1042,8 @@
         <label class="check pequeno" style="margin:6px 0 0"><input type="checkbox" id="coBase" ${S.filtro.coBase === 'SOLICITADO' ? 'checked' : ''} onchange="App.filtrar('coBase', this.checked ? 'SOLICITADO' : 'ENTREGADO')"> En la planilla oficial, poner como consumo lo <b>solicitado</b> (por defecto se pone lo <b>entregado</b>)</label></div>
       <div class="chips" style="margin-bottom:8px"><button class="chip ${tab === 'FARMACIA' ? 'activo' : ''}" onclick="App.filtrar('coTab','FARMACIA')">Farmacia / Droguería (${n('FARMACIA')})</button>
         <button class="chip ${tab === 'BODEGA' ? 'activo' : ''}" onclick="App.filtrar('coTab','BODEGA')">Bodega Central (${n('BODEGA')})</button>
-        <button class="chip ${tab === 'OTROS' ? 'activo' : ''}" onclick="App.filtrar('coTab','OTROS')">Sin planilla (${c.sin_planilla.length})</button>
         <button class="chip ${solo ? 'activo' : ''}" onclick="App.filtrar('coSolo', ${!solo})">Solo con movimiento</button></div>
-      ${tab === 'OTROS' ? `<div class="tarjeta">${c.sin_planilla.map(x => `<div class="item-sol"><span>${esc(x.nombre)}</span><span>solicitado ${num(x.solicitado)} · entregado <b>${num(x.entregado)}</b></span></div>`).join('') || '<p class="muted">Ninguno.</p>'}</div>` :
-      `<div class="tabla-wrap"><table><thead><tr><th>Producto (planilla oficial)</th><th>Unidad</th><th class="num">Solicitado</th><th class="num">Entregado</th><th class="num">N° solicitudes</th></tr></thead><tbody>${filas || '<tr><td colspan="5" class="muted">Sin movimiento en el período.</td></tr>'}</tbody></table></div>`}`;
+      ${`<div class="tabla-wrap"><table><thead><tr><th>Producto (planilla oficial)</th><th>Unidad</th><th class="num">Solicitado</th><th class="num">Entregado</th><th class="num">N° solicitudes</th></tr></thead><tbody>${filas || '<tr><td colspan="5" class="muted">Sin movimiento en el período.</td></tr>'}</tbody></table></div>`}`;
   }
   function bajarB64(b64, nombre, tipo) {
     const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
@@ -1006,7 +1067,6 @@
         const ws = XLSX.utils.aoa_to_sheet(filas); ws['!cols'] = [{ wch: 18 }, { wch: 48 }, { wch: 12 }, { wch: 11 }, { wch: 11 }, { wch: 13 }, { wch: 60 }];
         XLSX.utils.book_append_sheet(wb, ws, pl === 'FARMACIA' ? 'Farmacia' : 'Bodega Central');
       });
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Producto AVIS', 'Solicitado', 'Entregado']].concat(c.sin_planilla.map(x => [x.nombre, x.solicitado, x.entregado]))), 'Sin planilla');
       XLSX.writeFile(wb, 'CONSOLIDADO_APP_' + c.desde + '_al_' + c.hasta + '.xlsx');
     });
   }
@@ -1066,9 +1126,17 @@
         <div class="tarjeta"><h2>Plantillas oficiales</h2>
         <p>Planilla Farmacia (abastecimiento): <span class="estado ${c.plantilla_farmacia ? 'e-verde">Registrada' : 'e-rojo">Falta'}</span></p>
         <p>Planilla Bodega Central: <span class="estado ${c.plantilla_bodega ? 'e-verde">Registrada' : 'e-rojo">Falta'}</span></p>
-        <p class="enlaces">${c.carpeta_url ? `<a href="${c.carpeta_url}" target="_blank">Abrir carpeta del sistema en Drive</a>` : ''}<a href="${c.planilla_datos_url}" target="_blank">Abrir base de datos</a></p></div>`);
+        <p class="enlaces">${c.carpeta_url ? `<a href="${c.carpeta_url}" target="_blank">Abrir carpeta del sistema en Drive</a>` : ''}<a href="${c.planilla_datos_url}" target="_blank">Abrir base de datos</a></p></div>
+        <div class="tarjeta" style="border:1px solid var(--rojo-f)"><h2 style="color:var(--rojo)">Datos de prueba</h2>
+        <p class="muted">Antes de empezar a usar la app con el equipo, puede borrar todas las solicitudes de prueba. Usuarios, catálogo, fotos, cortes y plazos se mantienen.</p>
+        <label>Para borrar todas las solicitudes, escriba <b>BORRAR</b></label><input id="bsConf" autocomplete="off">
+        <p><button class="btn peligro" onclick="App.borrarTodasSolicitudes()">🗑 Borrar todas las solicitudes</button></p></div>`);
       $('#cfg_PLAZO_MODO').value = c.PLAZO_MODO === 'BLOQUEAR' ? 'BLOQUEAR' : 'MARCAR';
     });
+  }
+  async function borrarTodasSolicitudes() {
+    if ($('#bsConf').value.trim().toUpperCase() !== 'BORRAR') return toast('Escriba BORRAR para confirmar.', true);
+    await intentar(async () => { const r = await api('eliminarSolicitudes', { todas: true, confirmacion: 'BORRAR' }); $('#bsConf').value = ''; S.inicio = null; cargarInicio(); toast(r.eliminadas + ' solicitudes eliminadas.'); });
   }
   async function guardarConfig() {
     const d = { PLAZO_MODO: $('#cfg_PLAZO_MODO').value }; CAMPOS_CFG.forEach(x => d[x[0]] = $('#cfg_' + x[0]).value);
@@ -1092,7 +1160,7 @@
     atender, confirmarAtencion, rechazar: id => { if (confirm('¿Rechazar toda la solicitud?')) confirmarAtencion(id, true); }, marcarAvis,
     importarAvis, crearCorte, abrirCorte, editarCorte, guardarCorte: () => guardarCorte(false), conformarCorte, reabrirCorte, eliminarCorte, salirCorte, enviarCorteForm, enviarCorte,
     leerDespacho, crearRecepcion, abrirRecepcion, editarRecep, guardarRecepcion: () => guardarRecepcion(false), cerrarRecepcion, salirRecepcion, enviarRecepcionForm, enviarRecepcion,
-    editarProducto, filasPlanilla: () => filasPlanilla(), guardarProducto, subirFoto, quitarFoto, importarFotosForm, leerFotosPlanilla, cargarFotosPlanilla, descargarClasificacion, importarClasifForm, leerClasificacion, aplicarClasificacion, borrarFotosForm, borrarFotos, cargarConsolidado, descargarConsolidado, descargarConsolidadoDetalle, editarUsuario, tipoContrato, guardarUsuario, resetClave, guardarConfig, instalarApp,
+    editarProducto, filasPlanilla: () => filasPlanilla(), guardarProducto, subirFoto, quitarFoto, importarFotosForm, leerFotosPlanilla, cargarFotosPlanilla, descargarClasificacion, importarClasifForm, leerClasificacion, aplicarClasificacion, borrarFotosForm, borrarFotos, depurarCatalogoForm, depurarCatalogo, cambiarModo, eliminarSolicitud, eliminarUsuarioForm, eliminarUsuario, borrarTodasSolicitudes, cargarConsolidado, descargarConsolidado, descargarConsolidadoDetalle, editarUsuario, tipoContrato, guardarUsuario, resetClave, guardarConfig, instalarApp,
     guardarPlazo: id => guardarPlazo(typeof id === 'string' ? id : ''), editarPlazo, eliminarPlazo, generarReporte, detalleConsumo, descargarCSV };
 
   window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); S.instalar = e; if (S.vista === 'perfil') render(); });
