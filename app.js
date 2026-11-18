@@ -16,6 +16,7 @@
   const num = v => (v === null || v === undefined || v === '') ? '' : (Math.round(Number(v) * 100) / 100).toLocaleString('es-CL');
   const fecha = (iso, hora) => { if (!iso) return ''; const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/); if (!m) return iso; return m[3] + '/' + m[2] + '/' + m[1] + (hora && m[4] ? ' ' + m[4] + ':' + m[5] : ''); };
   const hoyISO = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+  const APP_VERSION = '1.6.0';
   const esAdmin = () => S.usuario && S.usuario.rol === 'ADMIN';
   const puede = p => !!(S.usuario && (S.usuario.permisos || (S.usuario.rol === 'ADMIN' ? ['PEDIR', 'SOLICITUDES', 'RECEPCION', 'CORTE', 'CATALOGO', 'REPORTES', 'PLAZOS'] : ['PEDIR'])).includes(p));
   const esGestor = () => S.usuario && S.usuario.rol !== 'USUARIO';
@@ -976,7 +977,7 @@
       puede('REPORTES') || puede('CORTE') ? c('consolidado', '📋 Consolidado de pedidos', 'Lo solicitado y entregado por la app, en el orden de las planillas oficiales, para descargar.') : '',
       esAdmin() ? c('usuarios', '👥 Usuarios y permisos', 'Accesos, vigencia de contratos, permisos de la encargada de bodega.') : '',
       esAdmin() ? c('config', '⚙️ Configuración', 'Correos de Droguería y Bodega Central, % de seguridad, modo de plazos.') : '',
-      c('perfil', '👤 Mi perfil', 'Cambiar clave, instalar la app, cerrar sesión.')].join(''));
+      c('perfil', '👤 Mi perfil', 'Cambiar clave, instalar la app, cerrar sesión.')].join('') + `<p class="muted pequeno" style="text-align:center">Versión de la app ${APP_VERSION}</p>`);
   }
 
   /* ================= Plazos de pedido ================= */
