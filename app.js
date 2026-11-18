@@ -17,6 +17,9 @@
   const fecha = (iso, hora) => { if (!iso) return ''; const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/); if (!m) return iso; return m[3] + '/' + m[2] + '/' + m[1] + (hora && m[4] ? ' ' + m[4] + ':' + m[5] : ''); };
   const hoyISO = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
   const esAdmin = () => S.usuario && S.usuario.rol === 'ADMIN';
+  const puede = p => !!(S.usuario && (S.usuario.permisos || (S.usuario.rol === 'ADMIN' ? ['PEDIR', 'SOLICITUDES', 'RECEPCION', 'CORTE', 'CATALOGO', 'REPORTES', 'PLAZOS'] : ['PEDIR'])).includes(p));
+  const esGestor = () => S.usuario && S.usuario.rol !== 'USUARIO';
+  const ROL_NOMBRE = { ADMIN: 'Administrador', BODEGA: 'Encargada de bodega', USUARIO: 'Usuario' };
 
   /* ---------------- Comunicación con Apps Script ---------------- */
   let pendientes = 0;
@@ -54,7 +57,7 @@
   function cerrarModal() { const m = $('#modal'); m.classList.add('oculto'); m.innerHTML = ''; }
   function leerArchivo(file) { return new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = mal; r.readAsDataURL(file); }); }
   async function reducirImagen(file) {
-    const url = await leerArchivo(file);
+    const url = await leerArchivo(file);  // File o Blob
     const img = await new Promise((ok, mal) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => mal(new Error('No se pudo leer la imagen.')); i.src = url; });
     let lado = 640, q = 0.8, out = '';
     for (let k = 0; k < 12; k++) {
@@ -76,7 +79,7 @@
     await intentar(async () => {
       const r = await api('login', { usuario, clave });
       S.token = r.token; S.usuario = r.usuario; LS.set('token', r.token); LS.set('usuario', r.usuario);
-      S.vista = r.usuario.rol === 'ADMIN' ? 'bandeja' : 'catalogo';
+      S.vista = navItems()[0][0];
       render();
     });
   }
@@ -105,9 +108,20 @@
 
   /* ---------------- Estructura ---------------- */
   const NAV_USUARIO = [['catalogo', '🦷', 'Pedir'], ['carrito', '🛒', 'Carrito'], ['mis', '📋', 'Mis pedidos'], ['perfil', '👤', 'Perfil']];
-  const NAV_ADMIN = [['bandeja', '📥', 'Solicitudes'], ['corte', '📊', 'Corte'], ['recepcion', '🚚', 'Recepción'], ['catadmin', '🗂️', 'Catálogo'], ['mas', '☰', 'Más']];
+  function navItems() {
+    if (!esGestor()) return NAV_USUARIO;
+    const l = [];
+    if (puede('SOLICITUDES')) l.push(['bandeja', '📥', 'Solicitudes']);
+    if (puede('CORTE')) l.push(['corte', '📊', 'Corte']);
+    if (puede('RECEPCION')) l.push(['recepcion', '🚚', 'Recepción']);
+    if (puede('CATALOGO')) l.push(['catadmin', '🗂️', 'Catálogo']);
+    if (l.length < 4 && puede('PEDIR')) l.push(['catalogo', '🦷', 'Pedir']);
+    l.push(['mas', '☰', 'Más']);
+    return l;
+  }
   const TITULOS = { catalogo: 'Solicitar insumos', carrito: 'Mi solicitud', mis: 'Mis pedidos', perfil: 'Mi perfil', bandeja: 'Solicitudes a bodega', corte: 'Corte y pedidos',
-    recepcion: 'Recepción de despachos', catadmin: 'Catálogo AVIS', usuarios: 'Usuarios y vigencia', config: 'Configuración', mas: 'Más opciones' };
+    recepcion: 'Recepción de despachos', catadmin: 'Catálogo AVIS', usuarios: 'Usuarios y permisos', config: 'Configuración', mas: 'Más opciones',
+    plazos: 'Plazos de pedido', reportes: 'Consumo y cumplimiento' };
 
   function render() {
     const app = $('#app');
@@ -125,12 +139,13 @@
         <p><button class="btn sec bloque" onclick="App.logout()">Salir</button></p></div></div>`;
       return;
     }
-    const nav = esAdmin() ? NAV_ADMIN : NAV_USUARIO;
+    const nav = navItems();
     if (!S.vista) S.vista = nav[0][0];
     const nCarro = Object.keys(S.carrito).length;
     const badge = v => v === 'carrito' && nCarro ? `<span class="badge">${nCarro}</span>` : (v === 'bandeja' && S.inicio && S.inicio.pendientes ? `<span class="badge">${S.inicio.pendientes}</span>` : '');
-    const activo = v => (S.vista === v || (v === 'mas' && ['usuarios', 'config', 'perfil'].includes(S.vista)) ? 'activo' : '');
-    app.innerHTML = `<header class="top"><h1>${esc(TITULOS[S.vista] || '')}<span class="sub">${esc(S.usuario.nombre)}${esAdmin() ? ' · Administrador' : ''}</span></h1>
+    const enNav = nav.map(n => n[0]);
+    const activo = v => (S.vista === v || (v === 'mas' && !enNav.includes(S.vista) && esGestor()) ? 'activo' : '');
+    app.innerHTML = `<header class="top"><h1>${esc(TITULOS[S.vista] || '')}<span class="sub">${esc(S.usuario.nombre)}${esGestor() ? ' · ' + ROL_NOMBRE[S.usuario.rol] : ''}</span></h1>
       <button onclick="App.refrescar()" title="Actualizar">⟳</button></header>
       <main id="vista"></main>
       <nav class="abajo">${nav.map(n => `<button class="${activo(n[0])}" onclick="App.ir('${n[0]}')"><span class="i">${n[1]}</span>${n[2]}${badge(n[0])}</button>`).join('')}</nav>`;
@@ -139,7 +154,7 @@
   function ir(v) { S.vista = v; window.scrollTo(0, 0); render(); }
   function refrescar() { S.catTs = 0; S.inicio = null; render(); cargarInicio(); }
   async function cargarInicio() {
-    try { S.inicio = await api('inicio', {}, { silencioso: true }); S.usuario = S.inicio.usuario; LS.set('usuario', S.usuario); if (esAdmin()) actualizarBadges(); } catch (e) {}
+    try { S.inicio = await api('inicio', {}, { silencioso: true }); S.usuario = S.inicio.usuario; LS.set('usuario', S.usuario); if (puede('SOLICITUDES')) actualizarBadges(); pintarBannerPlazo(); } catch (e) {}
   }
   function actualizarBadges() {
     const b = document.querySelector('nav.abajo button:first-child'); if (!b || !S.inicio) return;
@@ -156,11 +171,24 @@
       if (S.vista !== 'catalogo') return;
     }
     const cats = ['Todas'].concat([...new Set(S.catalogo.map(p => p.categoria))].sort());
-    V(`<div class="buscador"><input type="search" id="q" placeholder="Buscar producto (ej: guante, composite, lima)…" value="${esc(S.q)}" oninput="App.buscar(this.value)">
+    if (!S.inicio) cargarInicio();
+    V(`<div id="bannerPlazo">${bannerPlazo()}</div><div class="buscador"><input type="search" id="q" placeholder="Buscar producto (ej: guante, composite, lima)…" value="${esc(S.q)}" oninput="App.buscar(this.value)">
       <div class="chips" style="margin-top:8px">${cats.map(c => `<button class="chip ${S.cat === c ? 'activo' : ''}" onclick="App.categoria('${esc(c)}')">${esc(c)}</button>`).join('')}</div></div>
       <div id="lista"></div><div id="carroFlot"></div>`);
     pintarLista(); pintarCarroFlotante();
   }
+  const fh = iso => fecha(iso, true).replace(/\/\d{4}/, '');
+  const DIAS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+  const dia = iso => { const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? DIAS[new Date(+m[1], +m[2] - 1, +m[3]).getDay()] + ' ' : ''; };
+  function bannerPlazo() {
+    const p = S.inicio && S.inicio.plazo;
+    if (!p || !p.control) return '';
+    if (p.en_plazo === 'SI') return `<div class="tarjeta" style="border-left:5px solid var(--verde);border-radius:0 12px 12px 0;padding:10px 14px"><b style="color:var(--verde)">Plazo abierto</b> · ${esc(p.actual.nombre)}<br><span class="muted">Envíe su solicitud antes del <b>${dia(p.actual.cierre)}${fh(p.actual.cierre)}</b></span></div>`;
+    return `<div class="tarjeta" style="border-left:5px solid var(--rojo);border-radius:0 12px 12px 0;padding:10px 14px"><b style="color:var(--rojo)">Fuera de plazo</b>${p.proximo ? `<br><span class="muted">Próximo plazo: abre el ${dia(p.proximo.apertura)}${fh(p.proximo.apertura)} y cierra el ${dia(p.proximo.cierre)}${fh(p.proximo.cierre)}</span>` : ''}
+      <br><span class="pequeno">${p.modo === 'BLOQUEAR' ? 'Solo se aceptan solicitudes <b>urgentes</b> con el motivo escrito.' : 'Puede enviar igual, pero la solicitud quedará registrada <b>fuera de plazo</b>.'}</span></div>`;
+  }
+  function pintarBannerPlazo() { const b = $('#bannerPlazo'); if (b) b.innerHTML = bannerPlazo(); }
+
   function normal(s) { return String(s).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, ''); }
   function pintarLista() {
     const q = normal(S.q).split(/\s+/).filter(Boolean);
@@ -177,7 +205,7 @@
     const el = $('#carroFlot'); if (!el) return;
     const n = Object.keys(S.carrito).length;
     el.innerHTML = n ? `<div class="carro-flotante"><button class="btn ok bloque" onclick="App.ir('carrito')">🛒 Revisar solicitud (${n} producto${n > 1 ? 's' : ''})</button></div>` : '';
-    const b = [...document.querySelectorAll('nav.abajo button')][1];
+    const b = esGestor() ? null : [...document.querySelectorAll('nav.abajo button')][1];
     if (b) { const x = b.querySelector('.badge'); if (x) x.remove(); if (n) b.insertAdjacentHTML('beforeend', `<span class="badge">${n}</span>`); }
   }
   function fijar(id, v) {
@@ -201,14 +229,15 @@
     const items = Object.values(S.carrito);
     if (!items.length) return V('<div class="vacio">Su solicitud está vacía.<br><br><button class="btn" onclick="App.ir(\'catalogo\')">Ir al catálogo</button></div>');
     const boxes = (S.inicio && S.inicio.boxes) || [];
-    V(`<div class="tarjeta"><h2>Productos (${items.length})</h2>
+    const pz = S.inicio && S.inicio.plazo, bloqueo = pz && pz.control && pz.en_plazo === 'NO' && pz.modo === 'BLOQUEAR';
+    V(`<div id="bannerPlazo">${bannerPlazo()}</div><div class="tarjeta"><h2>Productos (${items.length})</h2>
       ${items.map(i => `<div class="producto" style="box-shadow:none;border:1px solid var(--borde)"><div class="nom">${esc(i.p.nombre)}</div>
         <div class="stepper"><button onclick="App.sumar('${i.p.id}',-1)">−</button><input inputmode="numeric" value="${i.cantidad}" onchange="App.fijar('${i.p.id}',this.value)"><button onclick="App.sumar('${i.p.id}',1)">+</button></div></div>`).join('')}
       <p class="muted pequeño">Las cantidades son en la unidad con que bodega registra en AVIS (unidades sueltas: guantes, tubos, tórulas).</p></div>
       <div class="tarjeta"><h2>Datos de la solicitud</h2>
         <label>Lugar de entrega</label><select id="sbox">${boxes.map(b => `<option>${esc(b)}</option>`).join('')}<option value="">Otro / sin especificar</option></select>
-        <label>Prioridad</label><select id="sprio"><option value="NORMAL">Normal</option><option value="URGENTE">Urgente (se necesita hoy)</option></select>
-        <label>Comentario para bodega (opcional)</label><textarea id="scom" maxlength="500" placeholder="Ej: para atención de urgencia del box 12"></textarea>
+        <label>Prioridad</label><select id="sprio">${bloqueo ? '' : '<option value="NORMAL">Normal</option>'}<option value="URGENTE">Urgente (se necesita hoy)</option></select>
+        <label>${bloqueo ? 'Motivo de la urgencia (obligatorio fuera de plazo)' : 'Comentario para bodega (opcional)'}</label><textarea id="scom" maxlength="500" placeholder="Ej: para atención de urgencia del box 12"></textarea>
         <p><button class="btn ok bloque" onclick="App.enviarSolicitud()">Enviar solicitud a bodega</button></p>
         <p><button class="btn sec bloque" onclick="App.vaciarCarrito()">Vaciar</button></p></div>`);
     if (!S.inicio) cargarInicio().then(() => { if (S.vista === 'carrito' && S.inicio) { const sel = $('#sbox'); if (sel && sel.options.length < 2) vCarrito(); } });
@@ -219,14 +248,14 @@
     await intentar(async () => {
       const r = await api('crearSolicitud', { items, box: $('#sbox').value, prioridad: $('#sprio').value, comentario: $('#scom').value });
       S.carrito = {}; LS.set('carrito', {});
-      toast('Solicitud ' + r.id + ' enviada a bodega.'); S.vista = 'mis'; render();
+      toast('Solicitud ' + r.id + ' enviada a bodega' + (r.en_plazo === 'NO' ? ' (fuera de plazo).' : '.')); S.vista = 'mis'; render();
     });
   }
 
   const COLOR_EST = { PENDIENTE: 'e-amarillo', ENTREGADA: 'e-verde', PARCIAL: 'e-azul', RECHAZADA: 'e-rojo', ANULADA: 'e-gris' };
   function tarjetaSolicitud(s, admin) {
     return `<div class="tarjeta"><div class="fila entre"><b>${esc(s.id)}</b><span class="estado ${COLOR_EST[s.estado] || 'e-gris'}">${esc(s.estado)}</span></div>
-      <div class="muted">${fecha(s.fecha, true)}${admin ? ' · <b>' + esc(s.nombre) + '</b>' : ''}${s.box ? ' · ' + esc(s.box) : ''}${s.prioridad === 'URGENTE' ? ' · <span class="estado e-rojo">URGENTE</span>' : ''}</div>
+      <div class="muted">${fecha(s.fecha, true)}${admin ? ' · <b>' + esc(s.nombre) + '</b>' : ''}${s.box ? ' · ' + esc(s.box) : ''}${s.prioridad === 'URGENTE' ? ' · <span class="estado e-rojo">URGENTE</span>' : ''}${s.en_plazo === 'SI' ? ' · <span class="estado e-verde">En plazo</span>' : (s.en_plazo === 'NO' ? ' · <span class="estado e-amarillo">Fuera de plazo</span>' : '')}</div>
       ${s.comentario ? `<p class="muted">“${esc(s.comentario)}”</p>` : ''}
       ${s.items.map(i => `<div class="item-sol"><span>${esc(i.nombre)}</span><span><b>${i.solicitada}</b>${i.entregada !== null ? ' → entregado ' + i.entregada : ''}</span></div>`).join('')}
       ${s.fecha_atencion ? `<p class="muted pequeno">Atendida por ${esc(s.atendido_por)} el ${fecha(s.fecha_atencion, true)}${s.obs_bodega ? ': ' + esc(s.obs_bodega) : ''}</p>` : ''}
@@ -278,7 +307,7 @@
     const el = $('#kpis'); if (!el || !S.inicio) return;
     const i = S.inicio;
     el.innerHTML = `<div class="kpis"><div class="kpi"><b>${i.pendientes || 0}</b><span>Solicitudes pendientes</span></div><div class="kpi"><b>${i.sin_avis || 0}</b><span>Entregadas sin rebajar en AVIS</span></div>
-      <div class="kpi"><b>${i.por_vencer || 0}</b><span>Accesos por vencer (30 días)</span></div><div class="kpi"><b>${i.vencidos || 0}</b><span>Accesos vencidos</span></div></div>`;
+      ${esAdmin() ? `<div class="kpi"><b>${i.por_vencer || 0}</b><span>Accesos por vencer (30 días)</span></div><div class="kpi"><b>${i.vencidos || 0}</b><span>Accesos vencidos</span></div>` : ''}</div>`;
   }
   function atender(id) {
     const s = S.bandeja.find(x => x.id === id);
@@ -530,7 +559,7 @@
     }
     const f = S.filtro.cat || 'VISIBLES';
     V(`<div class="buscador"><div class="fila"><input class="col" type="search" id="qa" placeholder="Buscar por nombre AVIS o código…" value="${esc(S.filtro.qa || '')}" oninput="App.buscarAdmin(this.value)">
-      <button class="btn chico" onclick="App.editarProducto('')">+ Nuevo</button></div>
+      <button class="btn chico" onclick="App.editarProducto('')">+ Nuevo</button><button class="btn sec chico" onclick="App.importarFotosForm()">⬆ Importar fotos desde planilla</button></div>
       <div class="chips" style="margin-top:8px">${[['VISIBLES', 'Visibles para TONS'], ['OCULTOS', 'Ocultos'], ['SINFOTO', 'Visibles sin foto'], ['FARMACIA', 'Planilla Farmacia'], ['BODEGA', 'Planilla Bodega'], ['NINGUNA', 'Sin planilla'], ['REVISAR', 'Revisar'], ['TODOS', 'Todos']].map(x =>
         `<button class="chip ${f === x[0] ? 'activo' : ''}" onclick="App.filtrar('cat','${x[0]}')">${x[1]}</button>`).join('')}</div></div><div id="listaAdmin"></div>`);
     pintarCatAdmin();
@@ -546,7 +575,8 @@
     $('#listaAdmin').innerHTML = `<p class="muted pequeno">${l.length} productos</p>` + l.slice(0, 300).map(p => `<div class="producto" onclick="App.editarProducto('${p.id}')" style="cursor:pointer">
       <div class="nom">${esc(p.nombre_avis)}<small>${p.codigo_avis ? 'Cód. ' + esc(p.codigo_avis) + ' · ' : ''}${p.planilla === 'NINGUNA' ? 'Sin planilla' : esc(p.planilla) + ' fila ' + p.fila + (p.factor !== 1 ? ' · ÷' + p.factor : '') + (p.rol_mapeo === 'ALTERNATIVO' ? ' · alternativo' : '')}
       ${p.certeza && p.certeza !== 'ALTA' ? ` · <span class="estado e-amarillo">${esc(p.certeza)}</span>` : ''}</small></div>
-      <span>${p.tiene_foto ? '📷' : ''} ${p.visible ? '<span class="estado e-verde">visible</span>' : '<span class="estado e-gris">oculto</span>'}</span></div>`).join('');
+      <span>${p.visible ? '<span class="estado e-verde">visible</span>' : '<span class="estado e-gris">oculto</span>'}</span>
+      <label class="foto-btn" title="${p.tiene_foto ? 'Cambiar foto con la cámara' : 'Agregar foto con la cámara'}" onclick="event.stopPropagation()" style="display:grid;place-items:center;${p.tiene_foto ? '' : 'opacity:.55'}">📷<input type="file" accept="image/*" capture="environment" style="display:none" onchange="App.subirFoto('${p.id}',this.files[0],true)"></label></div>`).join('');
   }
   function editarProducto(id) {
     const p = id ? S.admin.productos.find(x => x.id === id) : { id: '', nombre_avis: '', codigo_avis: '', categoria: 'Insumos generales', planilla: 'NINGUNA', fila: '', factor: 1, rol_mapeo: 'PRINCIPAL', visible: true, nota: '' };
@@ -563,7 +593,8 @@
       <label class="check"><input type="checkbox" id="pVi" ${p.visible ? 'checked' : ''}> Visible para las TONS en la app</label>
       <label>Nota</label><input id="pNo" value="${esc(p.nota)}">
       ${id ? `<h3>Foto</h3><div id="pFoto" class="muted">${p.tiene_foto ? 'Cargando foto…' : 'Sin foto.'}</div>
-        <div class="fila" style="margin-top:8px"><label class="btn sec chico" style="margin:0">📷 Tomar o elegir foto<input type="file" accept="image/*" capture="environment" style="display:none" onchange="App.subirFoto('${p.id}',this.files[0])"></label>
+        <div class="fila" style="margin-top:8px"><label class="btn sec chico" style="margin:0">📷 Tomar foto<input type="file" accept="image/*" capture="environment" style="display:none" onchange="App.subirFoto('${p.id}',this.files[0])"></label>
+        <label class="btn sec chico" style="margin:0">🖼 Elegir de galería<input type="file" accept="image/*" style="display:none" onchange="App.subirFoto('${p.id}',this.files[0])"></label>
         ${p.tiene_foto ? `<button class="btn peligro chico" onclick="App.quitarFoto('${p.id}')">Quitar foto</button>` : ''}</div>` : ''}
       <div class="fila" style="margin-top:14px"><button class="btn ok col" onclick="App.guardarProducto('${p.id}')">Guardar</button><button class="btn sec col" onclick="App.cerrarModal()">Cancelar</button></div>`);
     $('#pPl').value = p.planilla; $('#pRol').value = p.rol_mapeo || 'PRINCIPAL'; filasPlanilla(p.fila);
@@ -580,15 +611,104 @@
       rol_mapeo: $('#pRol').value, factor: $('#pFa').value, visible: $('#pVi').checked, nota: $('#pNo').value };
     await intentar(async () => { await api('guardarProducto', d); cerrarModal(); toast('Producto guardado.'); S.catTs = 0; vCatAdmin(true); });
   }
-  async function subirFoto(id, file) {
+  async function subirFoto(id, file, desdeLista) {
     if (!file) return;
     await intentar(async () => {
       const data = await reducirImagen(file);
       await api('subirFoto', { producto_id: id, data });
       S.fotos[id] = data; LS.set('foto_' + id, data); S.catTs = 0;
       const p = S.admin.productos.find(x => x.id === id); if (p) p.tiene_foto = true;
-      toast('Foto guardada.'); editarProducto(id);
+      toast('Foto guardada.'); if (desdeLista) pintarCatAdmin(); else editarProducto(id);
     });
+  }
+
+  /* ---- Importar fotos desde las planillas Excel con imágenes ---- */
+  const HOJA_PLANILLA = { 'ABASTECIMIENTO': 'FARMACIA', 'PASTA, CEPILLO Y DEDAL': 'BODEGA' };
+  function cargarJSZip() {
+    if (window.JSZip) return Promise.resolve();
+    return new Promise((ok, mal) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+      sc.onload = ok; sc.onerror = () => mal(new Error('No se pudo cargar el lector de Excel. Revise su conexión.')); document.head.appendChild(sc); });
+  }
+  async function imagenesDeXlsx(file) {
+    const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+    const zip = await JSZip.loadAsync(file);
+    const texto = p => zip.file(p) ? zip.file(p).async('string').then(t => t.replace(/^\uFEFF/, '').trim()) : Promise.resolve(null);
+    const xml = s => new DOMParser().parseFromString(s, 'application/xml');
+    const ruta = (dir, t) => { if (t.startsWith('/')) return t.slice(1); const partes = (dir + '/' + t).split('/'), out = [];
+      partes.forEach(x => { if (x === '..') out.pop(); else if (x && x !== '.') out.push(x); }); return out.join('/'); };
+    const rels = async p => { const dir = p.slice(0, p.lastIndexOf('/')), s_ = await texto(dir + '/_rels/' + p.slice(p.lastIndexOf('/') + 1) + '.rels'), m = {};
+      if (s_) [...xml(s_).getElementsByTagNameNS('*', 'Relationship')].forEach(r => m[r.getAttribute('Id')] = ruta(dir, r.getAttribute('Target'))); return m; };
+    const wbTxt = await texto('xl/workbook.xml'); if (!wbTxt) throw new Error(file.name + ' no es un archivo Excel válido.');
+    const wbRels = await rels('xl/workbook.xml'), res = [];
+    for (const sh of [...xml(wbTxt).getElementsByTagNameNS('*', 'sheet')]) {
+      const planilla = HOJA_PLANILLA[(sh.getAttribute('name') || '').trim()]; if (!planilla) continue;
+      const sp = wbRels[sh.getAttributeNS(NS_R, 'id') || sh.getAttribute('r:id')]; if (!sp) continue;
+      const dp = Object.values(await rels(sp)).find(t => /drawings\/[^/]+\.xml$/.test(t)); if (!dp) continue;
+      const dRels = await rels(dp), dXml = xml(await texto(dp));
+      for (const anc of [...dXml.documentElement.children]) {
+        const from = [...anc.children].find(c => c.localName === 'from'); if (!from) continue;
+        const fila = Number([...from.children].find(c => c.localName === 'row').textContent) + 1;
+        const blip = anc.getElementsByTagNameNS('*', 'blip')[0]; if (!blip) continue;
+        const media = dRels[blip.getAttributeNS(NS_R, 'embed') || blip.getAttribute('r:embed')]; if (!media || !zip.file(media)) continue;
+        res.push({ planilla, fila, media, archivo: file.name, blob: await zip.file(media).async('blob') });
+      }
+    }
+    return res;
+  }
+  function importarFotosForm() {
+    modal(`<h2>Importar fotos desde planilla</h2>
+      <p class="muted">Seleccione las planillas oficiales con imágenes (Farmacia y/o Bodega Central). Cada imagen se asigna a los productos AVIS de su fila.</p>
+      <input type="file" id="ifArch" accept=".xlsx" multiple>
+      <label class="check"><input type="checkbox" id="ifReemp"> Reemplazar también las fotos que ya existen</label>
+      <div id="ifRes"></div>
+      <div class="fila" style="margin-top:10px"><button class="btn col" id="ifLeer" onclick="App.leerFotosPlanilla()">Leer planillas</button><button class="btn sec col" onclick="App.cerrarModal()">Cerrar</button></div>`);
+  }
+  async function leerFotosPlanilla() {
+    const archivos = [...$('#ifArch').files]; if (!archivos.length) return toast('Seleccione al menos una planilla.', true);
+    const reemp = $('#ifReemp').checked, out = $('#ifRes');
+    out.innerHTML = '<p class="muted">Leyendo planillas…</p>';
+    await intentar(async () => {
+      await cargarJSZip();
+      let imgs = [];
+      for (const f of archivos) imgs = imgs.concat(await imagenesDeXlsx(f));
+      if (!imgs.length) { out.innerHTML = '<p class="estado e-amarillo">No se encontraron imágenes en las hojas ABASTECIMIENTO o "PASTA, CEPILLO Y DEDAL".</p>'; return; }
+      const porFila = {}; S.admin.productos.forEach(p => { if (p.planilla !== 'NINGUNA') (porFila[p.planilla + '|' + p.fila] = porFila[p.planilla + '|' + p.fila] || []).push(p); });
+      const tareas = [], sinProd = [], conFoto = [];
+      imgs.forEach(im => {
+        const ps = porFila[im.planilla + '|' + im.fila];
+        if (!ps) { const f = S.admin.filas.find(x => x.planilla === im.planilla && x.fila === im.fila); if (f) sinProd.push(f.producto_planilla); return; }
+        ps.forEach(p => { if (p.tiene_foto && !reemp) conFoto.push(p.nombre_avis); else tareas.push({ p, im }); });
+      });
+      S.importFotos = tareas;
+      const pl = [...new Set(imgs.map(i => i.planilla))].map(x => x === 'FARMACIA' ? 'Farmacia' : 'Bodega Central').join(' y ');
+      out.innerHTML = `<div class="kpis" style="margin-top:10px"><div class="kpi"><b>${imgs.length}</b><span>imágenes en ${pl}</span></div><div class="kpi"><b>${tareas.length}</b><span>productos AVIS recibirán foto</span></div><div class="kpi"><b>${conFoto.length}</b><span>ya tienen foto (se mantienen)</span></div></div>
+        ${sinProd.length ? `<p class="muted pequeno">Filas con imagen sin producto AVIS asociado (se omiten): ${sinProd.map(esc).join(' · ')}</p>` : ''}
+        ${tareas.length ? `<p><button class="btn ok bloque" onclick="App.cargarFotosPlanilla()">Cargar ${tareas.length} fotos</button></p><div id="ifProg"></div>` : ''}`;
+    });
+  }
+  async function cargarFotosPlanilla() {
+    const tareas = S.importFotos || [], prog = $('#ifProg'), btn = document.querySelector('[onclick="App.cargarFotosPlanilla()"]');
+    if (btn) btn.disabled = true;
+    const cache = {}, errores = []; let hechos = 0;
+    const paso = t => { if (prog) prog.innerHTML = `<p>${t}</p><div style="height:8px;background:var(--azul-claro);border-radius:6px"><div style="height:8px;width:${Math.round(hechos * 100 / tareas.length)}%;background:var(--verde);border-radius:6px"></div></div>`; };
+    for (let i = 0; i < tareas.length; i += 10) {
+      const lote = [];
+      for (const t of tareas.slice(i, i + 10)) {
+        const k = t.im.archivo + '|' + t.im.media;
+        try { if (!cache[k]) cache[k] = await reducirImagen(t.im.blob); lote.push({ producto_id: t.p.id, data: cache[k] }); }
+        catch (e) { errores.push(t.p.nombre_avis + ': formato de imagen no compatible'); }
+      }
+      paso(`Subiendo fotos… ${hechos} de ${tareas.length}`);
+      if (lote.length) {
+        try { const r = await api('subirFotosLote', { fotos: lote }, { silencioso: true }); errores.push(...r.errores);
+          lote.forEach(x => { const p = S.admin.productos.find(y => y.id === x.producto_id); if (p) p.tiene_foto = true; LS.set('foto_' + x.producto_id, x.data); S.fotos[x.producto_id] = x.data; }); }
+        catch (e) { if (e.message === '_sesion') return; errores.push('Lote ' + (i / 10 + 1) + ': ' + e.message); }
+      }
+      hechos = Math.min(tareas.length, i + 10);
+    }
+    paso(`Listo: ${hechos - errores.length} fotos cargadas.`);
+    if (errores.length && prog) prog.insertAdjacentHTML('beforeend', `<p class="estado e-amarillo">${errores.length} con problema</p><p class="muted pequeno">${errores.map(esc).join('<br>')}</p>`);
+    S.catTs = 0; S.importFotos = null; pintarCatAdmin();
   }
   async function quitarFoto(id) { await intentar(async () => { await api('quitarFoto', { producto_id: id }); LS.del('foto_' + id); delete S.fotos[id]; const p = S.admin.productos.find(x => x.id === id); if (p) p.tiene_foto = false; S.catTs = 0; editarProducto(id); }); }
 
@@ -597,7 +717,7 @@
   async function vUsuarios() {
     V('<div class="vacio"><div class="spinner"></div></div>');
     await intentar(async () => {
-      S.usuarios = await api('usuarios', {}, { silencioso: true });
+      const ru = await api('usuarios', {}, { silencioso: true }); S.usuarios = ru.usuarios; S.permisosNombres = ru.permisos;
       if (S.vista !== 'usuarios') return; pintarUsuarios();
     });
   }
@@ -608,7 +728,8 @@
     V(`<div class="fila entre" style="margin-bottom:8px"><div class="chips">${[['TODOS', 'Todos (' + S.usuarios.length + ')'], ['VIGENTE', 'Vigentes'], ['POR_VENCER', 'Por vencer (' + cnt('POR_VENCER') + ')'], ['VENCIDO', 'Vencidos (' + cnt('VENCIDO') + ')'], ['INACTIVO', 'Inactivos']].map(x =>
       `<button class="chip ${f === x[0] ? 'activo' : ''}" onclick="App.filtrar('usu','${x[0]}')">${x[1]}</button>`).join('')}</div><button class="btn chico" onclick="App.editarUsuario('')">+ Nuevo usuario</button></div>
       ${l.map(u => `<div class="tarjeta" onclick="App.editarUsuario('${u.id}')" style="cursor:pointer"><div class="fila entre"><b>${esc(u.nombre)}</b><span class="estado ${VIG[u.vigencia][0]}">${VIG[u.vigencia][1]}</span></div>
-        <div class="muted">${esc(u.usuario)} · ${u.rol === 'ADMIN' ? 'Administrador' : 'Usuario'}${u.cargo ? ' · ' + esc(u.cargo) : ''} · ${esc(u.tipo_contrato)}${u.fecha_termino ? ' hasta ' + fecha(u.fecha_termino) + (u.dias_vigencia !== null && u.dias_vigencia >= 0 ? ' (' + u.dias_vigencia + ' días)' : '') : ''}</div>
+        <div class="muted">${esc(u.usuario)} · <b>${ROL_NOMBRE[u.rol] || u.rol}</b>${u.cargo ? ' · ' + esc(u.cargo) : ''} · ${esc(u.tipo_contrato)}${u.fecha_termino ? ' hasta ' + fecha(u.fecha_termino) + (u.dias_vigencia !== null && u.dias_vigencia >= 0 ? ' (' + u.dias_vigencia + ' días)' : '') : ''}</div>
+        ${u.rol === 'BODEGA' ? `<div class="pequeno" style="margin-top:4px">${u.permisos.length ? u.permisos.map(p => `<span class="estado e-azul" style="margin:2px 4px 0 0">${esc((S.permisosNombres || {})[p] || p)}</span>`).join('') : '<span class="estado e-gris">Sin permisos activos</span>'}</div>` : ''}
         <div class="muted pequeno">Último ingreso: ${u.ultimo_acceso ? fecha(u.ultimo_acceso, true) : 'nunca'}</div></div>`).join('') || '<div class="vacio">Sin usuarios en esta vista.</div>'}`);
   }
   function editarUsuario(id) {
@@ -617,7 +738,9 @@
       <label>Nombre completo</label><input id="uN" value="${esc(u.nombre)}">
       <div class="fila"><div class="col"><label>Usuario (para ingresar)</label><input id="uU" value="${esc(u.usuario)}" autocapitalize="none" placeholder="ej: carmijo"></div><div class="col"><label>RUT</label><input id="uR" value="${esc(u.rut)}"></div></div>
       <div class="fila"><div class="col"><label>Cargo</label><input id="uC" value="${esc(u.cargo)}" list="lcargos"><datalist id="lcargos"><option>TONS</option><option>Odontólogo/a</option><option>Encargada de bodega</option><option>Encargado de programa</option></datalist></div>
-        <div class="col"><label>Perfil</label><select id="uRol"><option value="USUARIO">Usuario (solicita)</option><option value="ADMIN">Administrador</option></select></div></div>
+        <div class="col"><label>Perfil</label><select id="uRol" onchange="App.tipoContrato()"><option value="USUARIO">Usuario (solicita insumos)</option><option value="BODEGA">Encargada de bodega</option>${u.id && u.id === S.usuario.id ? '<option value="ADMIN">Administrador</option>' : ''}</select></div></div>
+      <div id="uPermBox" class="tarjeta" style="background:var(--azul-claro);box-shadow:none;margin-top:10px"><b>Permisos de la encargada de bodega</b>
+        ${Object.entries(S.permisosNombres || {}).map(([k, v]) => `<label class="check"><input type="checkbox" class="uPerm" value="${k}" ${(u.permisos || []).includes(k) && u.rol === 'BODEGA' ? 'checked' : ''}> ${esc(v)}</label>`).join('')}</div>
       <label>Correo (opcional)</label><input id="uE" type="email" value="${esc(u.correo)}">
       <div class="fila"><div class="col"><label>Tipo de contrato</label><select id="uT" onchange="App.tipoContrato()"><option>Indefinido</option><option>Plazo fijo</option><option>Reemplazo</option><option>Suplencia</option><option>Honorario</option></select></div>
         <div class="col"><label>Inicio</label><input id="uI" type="date" value="${esc(u.fecha_inicio)}"></div><div class="col" id="uFinBox"><label>Término de vigencia</label><input id="uF" type="date" value="${esc(u.fecha_termino)}"></div></div>
@@ -627,10 +750,11 @@
       <p><button class="btn sec bloque" onclick="App.cerrarModal()">Cancelar</button></p>`);
     $('#uRol').value = u.rol; $('#uT').value = u.tipo_contrato || 'Indefinido'; tipoContrato();
   }
-  function tipoContrato() { $('#uFinBox').style.display = $('#uT').value === 'Indefinido' ? 'none' : ''; }
+  function tipoContrato() { $('#uFinBox').style.display = $('#uT').value === 'Indefinido' ? 'none' : ''; const pb = $('#uPermBox'); if (pb) pb.style.display = $('#uRol').value === 'BODEGA' ? '' : 'none'; }
   async function guardarUsuario(id) {
     const d = { id, nombre: $('#uN').value, usuario: $('#uU').value, rut: $('#uR').value, cargo: $('#uC').value, rol: $('#uRol').value, correo: $('#uE').value,
-      tipo_contrato: $('#uT').value, fecha_inicio: $('#uI').value, fecha_termino: $('#uF').value, activo: $('#uA').checked ? 'SI' : 'NO' };
+      tipo_contrato: $('#uT').value, fecha_inicio: $('#uI').value, fecha_termino: $('#uF').value, activo: $('#uA').checked ? 'SI' : 'NO',
+      permisos: [...document.querySelectorAll('.uPerm:checked')].map(x => x.value) };
     await intentar(async () => {
       const r = await api('guardarUsuario', d);
       if (r.clave_temporal) modal(claveTemporalHtml(d.nombre, d.usuario, r.clave_temporal)); else { cerrarModal(); toast('Usuario guardado.'); }
@@ -650,9 +774,91 @@
 
   /* ================= ADMIN: configuración y menú ================= */
   function vMas() {
-    V(`<div class="tarjeta" style="cursor:pointer" onclick="App.ir('usuarios')"><h2>👥 Usuarios y vigencia</h2><p class="muted">Crear accesos, fechas de término de contrato, restablecer claves.</p></div>
-      <div class="tarjeta" style="cursor:pointer" onclick="App.ir('config')"><h2>⚙️ Configuración</h2><p class="muted">Correos de Droguería y Bodega Central, % de seguridad, lugares de entrega.</p></div>
-      <div class="tarjeta" style="cursor:pointer" onclick="App.ir('perfil')"><h2>👤 Mi perfil</h2><p class="muted">Cambiar clave, instalar la app, cerrar sesión.</p></div>`);
+    const c = (v, t, d) => `<div class="tarjeta" style="cursor:pointer" onclick="App.ir('${v}')"><h2>${t}</h2><p class="muted">${d}</p></div>`;
+    const enNav = navItems().map(n => n[0]);
+    V([puede('PEDIR') && !enNav.includes('catalogo') ? c('catalogo', '🦷 Solicitar insumos', 'Pedir a bodega dental como cualquier funcionario.') : '',
+      puede('PEDIR') ? c('mis', '📋 Mis pedidos', 'Estado de mis solicitudes.') : '',
+      puede('PLAZOS') ? c('plazos', '⏰ Plazos de pedido', 'Fechas y horas límite para que las TONS soliciten.') : '',
+      puede('REPORTES') ? c('reportes', '📈 Consumo y cumplimiento', 'Quién pide en plazo, qué se consume y por box.') : '',
+      esAdmin() ? c('usuarios', '👥 Usuarios y permisos', 'Accesos, vigencia de contratos, permisos de la encargada de bodega.') : '',
+      esAdmin() ? c('config', '⚙️ Configuración', 'Correos de Droguería y Bodega Central, % de seguridad, modo de plazos.') : '',
+      c('perfil', '👤 Mi perfil', 'Cambiar clave, instalar la app, cerrar sesión.')].join(''));
+  }
+
+  /* ================= Plazos de pedido ================= */
+  const dtLocal = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + 'T' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  async function vPlazos() {
+    V('<div class="vacio"><div class="spinner"></div></div>');
+    await intentar(async () => { S.plazos = await api('plazos', {}, { silencioso: true }); if (S.vista === 'plazos') pintarPlazos(); });
+  }
+  function pintarPlazos() {
+    const d = S.plazos, hoy = new Date();
+    const lun = new Date(hoy); lun.setDate(hoy.getDate() + ((8 - hoy.getDay()) % 7 || 7)); lun.setHours(8, 0, 0, 0);
+    const mar = new Date(lun); mar.setDate(lun.getDate() + 1); mar.setHours(12, 0, 0, 0);
+    const COL = { ABIERTO: 'e-verde', PROXIMO: 'e-azul', CERRADO: 'e-gris', INACTIVO: 'e-gris' };
+    V(`<div class="tarjeta"><h2>Nuevo plazo de pedido</h2>
+      <p class="muted">Las solicitudes hechas entre la apertura y la fecha/hora límite quedan <b>en plazo</b>; las demás, <b>fuera de plazo</b>. Modo actual: <b>${d.modo === 'BLOQUEAR' ? 'bloquear (solo urgentes con motivo)' : 'marcar (se aceptan y quedan registradas)'}</b>${esAdmin() ? ' — se cambia en Configuración' : ''}.</p>
+      <label>Nombre</label><input id="plN" placeholder="Ej: Pedido semanal">
+      <div class="fila"><div class="col"><label>Apertura (fecha y hora)</label><input type="datetime-local" id="plA" value="${dtLocal(lun)}"></div>
+      <div class="col"><label>Fecha y hora límite</label><input type="datetime-local" id="plC" value="${dtLocal(mar)}"></div></div>
+      <label>Repetir las semanas siguientes (misma hora)</label><input type="number" id="plR" min="0" max="26" value="0">
+      <p class="muted pequeno">Ej.: apertura lunes 08:00, límite martes 12:00 y repetir 7 → quedan programados los próximos 2 meses.</p>
+      <p><button class="btn" onclick="App.guardarPlazo()">Crear plazo</button></p></div>
+      <div class="tarjeta"><h2>Plazos</h2>${d.plazos.length ? d.plazos.map(p => `<div class="item-sol"><span><b>${esc(p.nombre)}</b> <span class="estado ${COL[p.estado]}">${p.estado === 'PROXIMO' ? 'Próximo' : p.estado.charAt(0) + p.estado.slice(1).toLowerCase()}</span><br>
+        <span class="muted pequeno">${dia(p.apertura)}${fecha(p.apertura, true)} → ${dia(p.cierre)}${fecha(p.cierre, true)} · ${p.solicitudes} solicitud${p.solicitudes === 1 ? '' : 'es'}${p.personas.length ? ' (' + p.personas.map(esc).join(', ') + ')' : ''}</span></span>
+        <span>${p.estado !== 'CERRADO' && p.activo ? `<button class="btn sec chico" onclick="App.editarPlazo('${p.id}')">Editar</button> ` : ''}${p.activo ? `<button class="btn peligro chico" onclick="App.eliminarPlazo('${p.id}')">Quitar</button>` : ''}</span></div>`).join('') : '<p class="muted">Aún no hay plazos: mientras no existan, las solicitudes no se controlan.</p>'}</div>`);
+  }
+  async function guardarPlazo(id) {
+    const d = id ? { id, nombre: $('#epN').value, apertura: $('#epA').value, cierre: $('#epC').value } : { nombre: $('#plN').value, apertura: $('#plA').value, cierre: $('#plC').value, repetir_semanas: $('#plR').value };
+    await intentar(async () => { S.plazos = await api('guardarPlazo', d); cerrarModal(); toast('Plazo guardado.'); S.inicio = null; cargarInicio(); pintarPlazos(); });
+  }
+  function editarPlazo(id) {
+    const p = S.plazos.plazos.find(x => x.id === id);
+    modal(`<h2>Editar plazo</h2><label>Nombre</label><input id="epN" value="${esc(p.nombre)}">
+      <label>Apertura</label><input type="datetime-local" id="epA" value="${p.apertura.slice(0, 16)}"><label>Fecha y hora límite</label><input type="datetime-local" id="epC" value="${p.cierre.slice(0, 16)}">
+      <div class="fila" style="margin-top:12px"><button class="btn ok col" onclick="App.guardarPlazo('${id}')">Guardar</button><button class="btn sec col" onclick="App.cerrarModal()">Cancelar</button></div>`);
+  }
+  async function eliminarPlazo(id) { if (!confirm('¿Quitar este plazo? Si ya tiene solicitudes, se conserva en el historial como inactivo.')) return; await intentar(async () => { S.plazos = await api('eliminarPlazo', { id }); pintarPlazos(); }); }
+
+  /* ================= Reporte de consumo y cumplimiento ================= */
+  async function vReportes() {
+    const h = new Date(), dsd = new Date(h.getTime() - 29 * 864e5), f = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    V(`<div class="tarjeta"><div class="fila"><div class="col"><label>Desde</label><input type="date" id="rpD" value="${S.rpD || f(dsd)}"></div><div class="col"><label>Hasta</label><input type="date" id="rpH" value="${S.rpH || f(h)}"></div>
+      <div style="align-self:flex-end"><button class="btn" onclick="App.generarReporte()">Ver reporte</button></div></div></div><div id="rpOut"></div>`);
+    generarReporte();
+  }
+  async function generarReporte() {
+    S.rpD = $('#rpD').value; S.rpH = $('#rpH').value;
+    $('#rpOut').innerHTML = '<div class="vacio"><div class="spinner"></div></div>';
+    await intentar(async () => {
+      const r = S.reporte = await api('reporte', { desde: S.rpD, hasta: S.rpH }, { silencioso: true });
+      const sem = p => p === null ? '<span class="estado e-gris">sin plazos</span>' : `<span class="estado ${p >= 90 ? 'e-verde' : p >= 70 ? 'e-amarillo' : 'e-rojo'}">${p} %</span>`;
+      const t = r.totales, maxE = Math.max(1, ...r.productos.map(x => x.entregado));
+      $('#rpOut').innerHTML = `<div class="kpis"><div class="kpi"><b>${t.solicitudes}</b><span>solicitudes</span></div><div class="kpi"><b>${t.pct_en_plazo === null ? '—' : t.pct_en_plazo + ' %'}</b><span>en plazo</span></div>
+        <div class="kpi"><b>${t.fuera_plazo}</b><span>fuera de plazo</span></div><div class="kpi"><b>${t.urgentes}</b><span>urgentes</span></div><div class="kpi"><b>${num(t.unidades_entregadas)}</b><span>unidades entregadas</span></div></div>
+        <div class="tarjeta"><div class="fila entre"><h2 style="margin:0">Cumplimiento de plazos por funcionario</h2><button class="btn sec chico" onclick="App.descargarCSV()">⬇ Descargar detalle (Excel/CSV)</button></div>
+        <div class="leyenda"><span><span class="punto p-verde"></span> ≥ 90 % en plazo</span><span><span class="punto p-amarillo"></span> 70–89 %</span><span><span class="punto p-rojo"></span> &lt; 70 %</span></div>
+        <div class="tabla-wrap"><table><thead><tr><th>Funcionario</th><th class="num">Solicitudes</th><th class="num">En plazo</th><th class="num">Fuera de plazo</th><th class="num">Urgentes</th><th class="num">Anuladas</th><th>% en plazo</th><th class="num">Unid. entregadas</th></tr></thead><tbody>
+        ${r.personas.map(x => `<tr><td>${esc(x.nombre)}</td><td class="num">${x.solicitudes}</td><td class="num">${x.en_plazo}</td><td class="num">${x.fuera_plazo}</td><td class="num">${x.urgentes}</td><td class="num">${x.anuladas}</td><td>${sem(x.pct_en_plazo)}</td><td class="num">${num(x.unidades_entregadas)}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">Sin solicitudes en el período.</td></tr>'}</tbody></table></div></div>
+        <div class="tarjeta"><h2>Consumo de insumos (entregado por bodega)</h2><p class="muted pequeno">Unidades como las registra AVIS. Toque un producto para ver cuánto retiró cada funcionario.</p>
+        <div class="tabla-wrap"><table><thead><tr><th>Producto (AVIS)</th><th>Categoría</th><th class="num">Solicitado</th><th class="num">Entregado</th><th style="min-width:140px"></th></tr></thead><tbody>
+        ${r.productos.map((x, k) => `<tr style="cursor:pointer" onclick="App.detalleConsumo(${k})"><td>${esc(x.nombre)}</td><td class="pequeno">${esc(x.categoria)}</td><td class="num">${num(x.solicitado)}</td><td class="num"><b>${num(x.entregado)}</b></td>
+          <td><div style="height:8px;background:var(--azul-claro);border-radius:5px"><div style="height:8px;width:${Math.round(x.entregado * 100 / maxE)}%;background:var(--azul-2);border-radius:5px"></div></div></td></tr>`).join('') || '<tr><td colspan="5" class="muted">Sin consumo en el período.</td></tr>'}</tbody></table></div></div>
+        <div class="tarjeta"><h2>Por lugar de entrega</h2>${r.boxes.map(b => `<div class="item-sol"><span>${esc(b.box)}</span><span>${b.solicitudes} solicitudes · <b>${num(b.entregado)}</b> unidades</span></div>`).join('') || '<p class="muted">—</p>'}</div>`;
+    });
+  }
+  function detalleConsumo(k) {
+    const x = S.reporte.productos[k];
+    modal(`<h2>${esc(x.nombre)}</h2><p class="muted">${fecha(S.reporte.desde)} al ${fecha(S.reporte.hasta)} · ${x.solicitudes} solicitudes</p>
+      ${Object.entries(x.por_persona).sort((a, b) => b[1] - a[1]).map(([n, v]) => `<div class="item-sol"><span>${esc(n)}</span><b>${num(v)}</b></div>`).join('')}
+      <p><button class="btn sec bloque" onclick="App.cerrarModal()">Cerrar</button></p>`);
+  }
+  function descargarCSV() {
+    const r = S.reporte; if (!r) return;
+    const q = v => { const t = String(v === null || v === undefined ? '' : v); return /[;"\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+    const csv = '\uFEFF' + [r.detalle_columnas].concat(r.detalle).map(f => f.map(q).join(';')).join('\r\n');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    a.download = 'consumo_' + r.desde + '_al_' + r.hasta + '.csv'; document.body.appendChild(a); a.click(); a.remove();
   }
   const CAMPOS_CFG = [['NOMBRE_UNIDAD', 'Nombre de la unidad (aparece en correos e informes)'], ['NOMBRE_DROGUERIA', 'Nombre destinatario Droguería'], ['CORREO_DROGUERIA', 'Correo encargado/a de Droguería (planilla Farmacia)'],
     ['NOMBRE_BODEGA_CENTRAL', 'Nombre destinatario Bodega Central'], ['CORREO_BODEGA_CENTRAL', 'Correo encargada de Bodega Central Dental'], ['CORREOS_COPIA', 'Correos en copia de todos los envíos (separados por coma)'],
@@ -663,16 +869,18 @@
     await intentar(async () => {
       const c = await api('config', {}, { silencioso: true });
       if (S.vista !== 'config') return;
-      V(`<div class="tarjeta"><h2>Datos de envío</h2>${CAMPOS_CFG.map(x => `<label>${x[1]}</label><input id="cfg_${x[0]}" value="${esc(c[x[0]])}">`).join('')}
+      V(`<div class="tarjeta"><h2>Plazos de pedido</h2><label>Solicitudes hechas fuera de plazo</label><select id="cfg_PLAZO_MODO"><option value="MARCAR">Se aceptan y quedan marcadas como fuera de plazo</option><option value="BLOQUEAR">Se bloquean, salvo urgentes con motivo escrito</option></select></div>
+        <div class="tarjeta"><h2>Datos de envío</h2>${CAMPOS_CFG.map(x => `<label>${x[1]}</label><input id="cfg_${x[0]}" value="${esc(c[x[0]])}">`).join('')}
         <p><button class="btn ok bloque" onclick="App.guardarConfig()">Guardar configuración</button></p></div>
         <div class="tarjeta"><h2>Plantillas oficiales</h2>
         <p>Planilla Farmacia (abastecimiento): <span class="estado ${c.plantilla_farmacia ? 'e-verde">Registrada' : 'e-rojo">Falta'}</span></p>
         <p>Planilla Bodega Central: <span class="estado ${c.plantilla_bodega ? 'e-verde">Registrada' : 'e-rojo">Falta'}</span></p>
         <p class="enlaces">${c.carpeta_url ? `<a href="${c.carpeta_url}" target="_blank">Abrir carpeta del sistema en Drive</a>` : ''}<a href="${c.planilla_datos_url}" target="_blank">Abrir base de datos</a></p></div>`);
+      $('#cfg_PLAZO_MODO').value = c.PLAZO_MODO === 'BLOQUEAR' ? 'BLOQUEAR' : 'MARCAR';
     });
   }
   async function guardarConfig() {
-    const d = {}; CAMPOS_CFG.forEach(x => d[x[0]] = $('#cfg_' + x[0]).value);
+    const d = { PLAZO_MODO: $('#cfg_PLAZO_MODO').value }; CAMPOS_CFG.forEach(x => d[x[0]] = $('#cfg_' + x[0]).value);
     await intentar(async () => { await api('guardarConfig', d); toast('Configuración guardada.'); });
   }
 
@@ -687,13 +895,14 @@
   }
   async function instalarApp() { if (!S.instalar) return; S.instalar.prompt(); await S.instalar.userChoice; S.instalar = null; render(); }
 
-  const VISTAS = { catalogo: vCatalogo, carrito: vCarrito, mis: vMis, perfil: vPerfil, bandeja: vBandeja, corte: vCorte, recepcion: vRecepcion, catadmin: () => vCatAdmin(), usuarios: vUsuarios, config: vConfig, mas: vMas };
+  const VISTAS = { catalogo: vCatalogo, carrito: vCarrito, mis: vMis, perfil: vPerfil, bandeja: vBandeja, corte: vCorte, recepcion: vRecepcion, catadmin: () => vCatAdmin(), usuarios: vUsuarios, config: vConfig, mas: vMas, plazos: vPlazos, reportes: vReportes };
 
   window.App = { login, logout, cambiarClave, ir, refrescar, buscar, buscarAdmin, categoria, filtrar, sumar, fijar, verFoto, cerrarModal, vaciarCarrito, enviarSolicitud, anular,
     atender, confirmarAtencion, rechazar: id => { if (confirm('¿Rechazar toda la solicitud?')) confirmarAtencion(id, true); }, marcarAvis,
     importarAvis, crearCorte, abrirCorte, editarCorte, guardarCorte: () => guardarCorte(false), conformarCorte, reabrirCorte, eliminarCorte, salirCorte, enviarCorteForm, enviarCorte,
     leerDespacho, crearRecepcion, abrirRecepcion, editarRecep, guardarRecepcion: () => guardarRecepcion(false), cerrarRecepcion, salirRecepcion, enviarRecepcionForm, enviarRecepcion,
-    editarProducto, filasPlanilla: () => filasPlanilla(), guardarProducto, subirFoto, quitarFoto, editarUsuario, tipoContrato, guardarUsuario, resetClave, guardarConfig, instalarApp };
+    editarProducto, filasPlanilla: () => filasPlanilla(), guardarProducto, subirFoto, quitarFoto, importarFotosForm, leerFotosPlanilla, cargarFotosPlanilla, editarUsuario, tipoContrato, guardarUsuario, resetClave, guardarConfig, instalarApp,
+    guardarPlazo: id => guardarPlazo(typeof id === 'string' ? id : ''), editarPlazo, eliminarPlazo, generarReporte, detalleConsumo, descargarCSV };
 
   window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); S.instalar = e; if (S.vista === 'perfil') render(); });
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});

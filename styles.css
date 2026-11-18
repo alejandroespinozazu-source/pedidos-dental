@@ -39,7 +39,7 @@ nav.abajo .badge { position: absolute; top: 3px; left: calc(50% + 6px); }
 .muted { color: var(--gris); font-size: 13px; }
 .pequeno { font-size: 12px; }
 label { display: block; font-size: 13px; color: var(--gris); margin: 10px 0 4px; }
-input[type=text], input[type=password], input[type=number], input[type=date], input[type=email], input[type=search], select, textarea {
+input:not([type]), input[type=text], input[type=password], input[type=datetime-local], input[type=number], input[type=date], input[type=email], input[type=search], select, textarea {
   width: 100%; border: 1px solid var(--borde); background: #fff; border-radius: 10px; padding: 10px 12px; outline: none; }
 input:focus, select:focus, textarea:focus { border-color: var(--azul-2); box-shadow: 0 0 0 3px rgba(46,106,163,.15); }
 textarea { min-height: 90px; resize: vertical; }
