@@ -16,9 +16,9 @@
   const num = v => (v === null || v === undefined || v === '') ? '' : (Math.round(Number(v) * 100) / 100).toLocaleString('es-CL');
   const fecha = (iso, hora) => { if (!iso) return ''; const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/); if (!m) return iso; return m[3] + '/' + m[2] + '/' + m[1] + (hora && m[4] ? ' ' + m[4] + ':' + m[5] : ''); };
   const hoyISO = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
-  const APP_VERSION = '1.6.0';
+  const APP_VERSION = '1.7.0';
   const esAdmin = () => S.usuario && S.usuario.rol === 'ADMIN';
-  const puede = p => !!(S.usuario && (S.usuario.permisos || (S.usuario.rol === 'ADMIN' ? ['PEDIR', 'SOLICITUDES', 'RECEPCION', 'CORTE', 'CATALOGO', 'REPORTES', 'PLAZOS'] : ['PEDIR'])).includes(p));
+  const puede = p => !!(S.usuario && (S.usuario.permisos || (S.usuario.rol === 'ADMIN' ? ['PEDIR', 'SOLICITUDES', 'RECEPCION', 'CORTE', 'CONSOLIDADO', 'CATALOGO', 'REPORTES', 'PLAZOS'] : ['PEDIR'])).includes(p));
   const esGestor = () => S.usuario && S.usuario.rol !== 'USUARIO';
   const ROL_NOMBRE = { ADMIN: 'Administrador', BODEGA: 'Encargada de bodega', USUARIO: 'Usuario' };
 
@@ -114,6 +114,7 @@
     const l = [];
     if (puede('SOLICITUDES')) l.push(['bandeja', '📥', 'Solicitudes']);
     if (puede('CORTE')) l.push(['corte', '📊', 'Corte']);
+    else if (puede('CONSOLIDADO')) l.push(['consolidado', '📊', 'Consolidación']);
     if (puede('RECEPCION')) l.push(['recepcion', '🚚', 'Recepción']);
     if (puede('CATALOGO')) l.push(['catadmin', '🗂️', 'Catálogo']);
     if (l.length < 4 && puede('PEDIR')) l.push(['catalogo', '🦷', 'Pedir']);
@@ -122,7 +123,7 @@
   }
   const TITULOS = { catalogo: 'Solicitar insumos', carrito: 'Mi solicitud', mis: 'Mis pedidos', perfil: 'Mi perfil', bandeja: 'Solicitudes a bodega', corte: 'Corte y pedidos',
     recepcion: 'Recepción de despachos', catadmin: 'Catálogo AVIS', usuarios: 'Usuarios y permisos', config: 'Configuración', mas: 'Más opciones',
-    plazos: 'Plazos de pedido', reportes: 'Consumo y cumplimiento', consolidado: 'Consolidado de pedidos' };
+    plazos: 'Plazos de pedido', reportes: 'Consumo y cumplimiento', consolidado: 'Consolidación solo de la App' };
 
   function render() {
     const app = $('#app');
@@ -371,7 +372,7 @@
         <textarea id="avisTxt" placeholder="Pegue aquí el informe completo de AVIS…"></textarea>
         <div class="fila"><div class="col"><label>O suba el informe exportado (Excel, PDF o CSV)</label><input type="file" id="avisPdf" accept=".xls,.xlsx,.csv,.htm,.html,.pdf,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div></div>
         <div class="fila"><div class="col"><label>Desde (si no viene en el informe)</label><input type="date" id="avDesde"></div><div class="col"><label>Hasta</label><input type="date" id="avHasta"></div></div>
-        <p><button class="btn" onclick="App.importarAvis()">Importar informe</button> <button class="btn sec" onclick="App.ir('consolidado')">📋 Ver consolidado de la app (sin AVIS)</button></p>
+        <p><button class="btn" onclick="App.importarAvis()">Importar informe</button> <button class="btn sec" onclick="App.ir('consolidado')">📋 Consolidación solo de la App</button></p>
         ${ult ? `<p class="muted">Último informe: ${fecha(ult.desde)} al ${fecha(ult.hasta)} · ${ult.n_productos} productos · importado ${fecha(ult.fecha, true)} por ${esc(ult.usuario)}${ult.n_sin_catalogo ? ` · ${ult.n_sin_catalogo} sin planilla omitidos` : ''}</p>` : ''}</div>
         <div class="tarjeta"><h2>2. Generar corte (borrador editable)</h2>
         ${ult ? `<div class="fila"><div class="col"><label>Informe AVIS</label><select id="ctImp">${imps.map(i => `<option value="${i.id}">${fecha(i.desde)} al ${fecha(i.hasta)} (${i.id})</option>`).join('')}</select></div>
@@ -918,6 +919,7 @@
       <div class="fila"><div class="col"><label>Cargo</label><input id="uC" value="${esc(u.cargo)}" list="lcargos"><datalist id="lcargos"><option>TONS</option><option>Odontólogo/a</option><option>Encargada de bodega</option><option>Encargado de programa</option></datalist></div>
         <div class="col"><label>Perfil</label><select id="uRol" onchange="App.tipoContrato()"><option value="USUARIO">Usuario (solicita insumos)</option><option value="BODEGA">Encargada de bodega</option>${u.id && u.id === S.usuario.id ? '<option value="ADMIN">Administrador</option>' : ''}</select></div></div>
       <div id="uPermBox" class="tarjeta" style="background:var(--azul-claro);box-shadow:none;margin-top:10px"><b>Permisos de la encargada de bodega</b>
+        <p class="muted pequeno" style="margin:4px 0">Perfil habitual: solicitar insumos, ver y atender solicitudes, y consolidación solo de la App. Eliminar solicitudes o usuarios es siempre del administrador.</p>
         ${Object.entries(S.permisosNombres || {}).map(([k, v]) => `<label class="check"><input type="checkbox" class="uPerm" value="${k}" ${(u.permisos || []).includes(k) && u.rol === 'BODEGA' ? 'checked' : ''}> ${esc(v)}</label>`).join('')}</div>
       <label>Correo (opcional)</label><input id="uE" type="email" value="${esc(u.correo)}">
       <div class="fila"><div class="col"><label>Tipo de contrato</label><select id="uT" onchange="App.tipoContrato()"><option>Indefinido</option><option>Plazo fijo</option><option>Reemplazo</option><option>Suplencia</option><option>Honorario</option></select></div>
@@ -929,7 +931,12 @@
       <p><button class="btn sec bloque" onclick="App.cerrarModal()">Cancelar</button></p>`);
     $('#uRol').value = u.rol; $('#uT').value = u.tipo_contrato || 'Indefinido'; tipoContrato();
   }
-  function tipoContrato() { $('#uFinBox').style.display = $('#uT').value === 'Indefinido' ? 'none' : ''; const pb = $('#uPermBox'); if (pb) pb.style.display = $('#uRol').value === 'BODEGA' ? '' : 'none'; }
+  function tipoContrato() {
+    $('#uFinBox').style.display = $('#uT').value === 'Indefinido' ? 'none' : ''; const pb = $('#uPermBox'); if (!pb) return;
+    const bod = $('#uRol').value === 'BODEGA'; pb.style.display = bod ? '' : 'none';
+    // al elegir "Encargada de bodega" sin permisos marcados, se proponen los del perfil habitual
+    if (bod && !document.querySelector('.uPerm:checked')) ['PEDIR', 'SOLICITUDES', 'CONSOLIDADO'].forEach(p => { const x = document.querySelector('.uPerm[value="' + p + '"]'); if (x) x.checked = true; });
+  }
   async function guardarUsuario(id) {
     const d = { id, nombre: $('#uN').value, usuario: $('#uU').value, rut: $('#uR').value, cargo: $('#uC').value, rol: $('#uRol').value, correo: $('#uE').value,
       tipo_contrato: $('#uT').value, fecha_inicio: $('#uI').value, fecha_termino: $('#uF').value, activo: $('#uA').checked ? 'SI' : 'NO',
@@ -974,7 +981,7 @@
       puede('PEDIR') ? c('mis', '📋 Mis pedidos', 'Estado de mis solicitudes.') : '',
       puede('PLAZOS') ? c('plazos', '⏰ Plazos de pedido', 'Fechas y horas límite para que las TONS soliciten.') : '',
       puede('REPORTES') ? c('reportes', '📈 Consumo y cumplimiento', 'Quién pide en plazo, qué se consume y por box.') : '',
-      puede('REPORTES') || puede('CORTE') ? c('consolidado', '📋 Consolidado de pedidos', 'Lo solicitado y entregado por la app, en el orden de las planillas oficiales, para descargar.') : '',
+      (puede('REPORTES') || puede('CORTE') || puede('CONSOLIDADO')) && !navItems().some(n => n[0] === 'consolidado') ? c('consolidado', '📋 Consolidación solo de la App', 'Lo solicitado y entregado por la app (sin AVIS), en el orden de las planillas oficiales, para descargar.') : '',
       esAdmin() ? c('usuarios', '👥 Usuarios y permisos', 'Accesos, vigencia de contratos, permisos de la encargada de bodega.') : '',
       esAdmin() ? c('config', '⚙️ Configuración', 'Correos de Droguería y Bodega Central, % de seguridad, modo de plazos.') : '',
       c('perfil', '👤 Mi perfil', 'Cambiar clave, instalar la app, cerrar sesión.')].join('') + `<p class="muted pequeno" style="text-align:center">Versión de la app ${APP_VERSION}</p>`);
@@ -1020,7 +1027,7 @@
     const h = new Date(), f = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
     V(`<div class="tarjeta"><p class="muted">Suma de lo que las TONS solicitaron y bodega entregó por la app, ordenado como las planillas oficiales y en la unidad de cada planilla. No usa AVIS.</p>
       <div class="fila"><div class="col"><label>Desde</label><input type="date" id="coD" value="${S.coD || f(new Date(h.getFullYear(), h.getMonth(), 1))}"></div><div class="col"><label>Hasta</label><input type="date" id="coH" value="${S.coH || f(h)}"></div>
-      <div style="align-self:flex-end"><button class="btn" onclick="App.cargarConsolidado()">Ver consolidado</button></div></div></div><div id="coOut"></div>`);
+      <div style="align-self:flex-end"><button class="btn" onclick="App.cargarConsolidado()">Ver consolidación</button></div></div></div><div id="coOut"></div>`);
     cargarConsolidado();
   }
   async function cargarConsolidado() {
