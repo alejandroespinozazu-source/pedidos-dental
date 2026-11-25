@@ -16,7 +16,7 @@
   const num = v => (v === null || v === undefined || v === '') ? '' : (Math.round(Number(v) * 100) / 100).toLocaleString('es-CL');
   const fecha = (iso, hora) => { if (!iso) return ''; const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/); if (!m) return iso; return m[3] + '/' + m[2] + '/' + m[1] + (hora && m[4] ? ' ' + m[4] + ':' + m[5] : ''); };
   const hoyISO = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
-  const APP_VERSION = '1.7.0';
+  const APP_VERSION = '1.8.0';
   const esAdmin = () => S.usuario && S.usuario.rol === 'ADMIN';
   const puede = p => !!(S.usuario && (S.usuario.permisos || (S.usuario.rol === 'ADMIN' ? ['PEDIR', 'SOLICITUDES', 'RECEPCION', 'CORTE', 'CONSOLIDADO', 'CATALOGO', 'REPORTES', 'PLAZOS'] : ['PEDIR'])).includes(p));
   const esGestor = () => S.usuario && S.usuario.rol !== 'USUARIO';
@@ -123,7 +123,7 @@
   }
   const TITULOS = { catalogo: 'Solicitar insumos', carrito: 'Mi solicitud', mis: 'Mis pedidos', perfil: 'Mi perfil', bandeja: 'Solicitudes a bodega', corte: 'Corte y pedidos',
     recepcion: 'Recepción de despachos', catadmin: 'Catálogo AVIS', usuarios: 'Usuarios y permisos', config: 'Configuración', mas: 'Más opciones',
-    plazos: 'Plazos de pedido', reportes: 'Consumo y cumplimiento', consolidado: 'Consolidación solo de la App' };
+    plazos: 'Plazos de pedido', reportes: 'Consumo y cumplimiento', consolidado: 'Consolidación solo de la App', preparar: 'Preparación semanal' };
 
   function render() {
     const app = $('#app');
@@ -146,7 +146,8 @@
     const nCarro = Object.keys(S.carrito).length;
     const badge = v => v === 'carrito' && nCarro ? `<span class="badge">${nCarro}</span>` : (v === 'bandeja' && S.inicio && S.inicio.pendientes ? `<span class="badge">${S.inicio.pendientes}</span>` : '');
     const enNav = nav.map(n => n[0]);
-    const activo = v => (S.vista === v || (v === 'mas' && !enNav.includes(S.vista) && esGestor()) ? 'activo' : '');
+    const vistaNav = S.vista === 'preparar' && enNav.includes('bandeja') ? 'bandeja' : S.vista;
+    const activo = v => (vistaNav === v || (v === 'mas' && !enNav.includes(vistaNav) && esGestor()) ? 'activo' : '');
     app.innerHTML = `<header class="top"><h1>${esc(TITULOS[S.vista] || '')}<span class="sub">${esc(S.usuario.nombre)}${esGestor() ? ' · ' + ROL_NOMBRE[S.usuario.rol] : ''}</span></h1>
       <button onclick="App.refrescar()" title="Actualizar">⟳</button></header>
       <main id="vista"></main>
@@ -260,17 +261,26 @@
       <p class="muted pequeno">Los productos marcados “Se pide por CJ / CAJAS” se piden por caja; el resto, por unidad. Bodega recibe la cantidad en unidades AVIS.</p></div>
       <div class="tarjeta"><h2>Datos de la solicitud</h2>
         <label>Lugar de entrega</label><select id="sbox">${boxes.map(b => `<option>${esc(b)}</option>`).join('')}<option value="">Otro / sin especificar</option></select>
+        <div class="fila"><div class="col"><label>Turno</label><select id="stur"><option value="">Seleccione…</option>${((S.inicio && S.inicio.turnos) || []).map(t => `<option>${esc(t)}</option>`).join('')}</select></div>
+          <div class="col"><label>Programa</label><select id="sprog"><option value="">Seleccione…</option>${((S.inicio && S.inicio.programas) || []).map(t => `<option>${esc(t)}</option>`).join('')}<option value="General">Otro / general</option></select></div></div>
         <label>Prioridad</label><select id="sprio">${bloqueo ? '' : '<option value="NORMAL">Normal</option>'}<option value="URGENTE">Urgente (se necesita hoy)</option></select>
         <label>${bloqueo ? 'Motivo de la urgencia (obligatorio fuera de plazo)' : 'Comentario para bodega (opcional)'}</label><textarea id="scom" maxlength="500" placeholder="Ej: para atención de urgencia del box 12"></textarea>
         <p><button class="btn ok bloque" onclick="App.enviarSolicitud()">Enviar solicitud a bodega</button></p>
         <p><button class="btn sec bloque" onclick="App.vaciarCarrito()">Vaciar</button></p></div>`);
-    if (!S.inicio) cargarInicio().then(() => { if (S.vista === 'carrito' && S.inicio) { const sel = $('#sbox'); if (sel && sel.options.length < 2) vCarrito(); } });
+    // se propone lo último que usó esta persona (box, turno y programa)
+    const ult = LS.get('ultimaSol', {});
+    [['#sbox', ult.box], ['#stur', ult.turno], ['#sprog', ult.programa]].forEach(([q, v]) => { const el = $(q); if (el && v && [...el.options].some(o => o.value === v)) el.value = v; });
+    if (!S.inicio) cargarInicio().then(() => { if (S.vista === 'carrito' && S.inicio) { const sel = $('#stur'); if (sel && sel.options.length < 2) vCarrito(); } });
   }
   function vaciarCarrito() { if (confirm('¿Vaciar la solicitud?')) { S.carrito = {}; LS.set('carrito', {}); render(); } }
   async function enviarSolicitud() {
     const items = Object.values(S.carrito).map(i => ({ producto_id: i.p.id, cantidad: i.cantidad }));
+    const box = $('#sbox').value, turno = $('#stur').value, programa = $('#sprog').value;
+    if ($('#stur').options.length > 1 && !turno) return toast('Indique el turno.', true);
+    if ($('#sprog').options.length > 1 && !programa) return toast('Indique el programa.', true);
     await intentar(async () => {
-      const r = await api('crearSolicitud', { items, box: $('#sbox').value, prioridad: $('#sprio').value, comentario: $('#scom').value });
+      const r = await api('crearSolicitud', { items, box, turno, programa, prioridad: $('#sprio').value, comentario: $('#scom').value });
+      LS.set('ultimaSol', { box, turno, programa });
       S.carrito = {}; LS.set('carrito', {});
       toast('Solicitud ' + r.id + ' enviada a bodega' + (r.en_plazo === 'NO' ? ' (fuera de plazo).' : '.')); S.vista = 'mis'; render();
     });
@@ -279,7 +289,7 @@
   const COLOR_EST = { PENDIENTE: 'e-amarillo', ENTREGADA: 'e-verde', PARCIAL: 'e-azul', RECHAZADA: 'e-rojo', ANULADA: 'e-gris' };
   function tarjetaSolicitud(s, admin) {
     return `<div class="tarjeta"><div class="fila entre"><b>${esc(s.id)}</b><span class="estado ${COLOR_EST[s.estado] || 'e-gris'}">${esc(s.estado)}</span></div>
-      <div class="muted">${fecha(s.fecha, true)}${admin ? ' · <b>' + esc(s.nombre) + '</b>' : ''}${s.box ? ' · ' + esc(s.box) : ''}${s.prioridad === 'URGENTE' ? ' · <span class="estado e-rojo">URGENTE</span>' : ''}${s.en_plazo === 'SI' ? ' · <span class="estado e-verde">En plazo</span>' : (s.en_plazo === 'NO' ? ' · <span class="estado e-amarillo">Fuera de plazo</span>' : '')}</div>
+      <div class="muted">${fecha(s.fecha, true)}${admin ? ' · <b>' + esc(s.nombre) + '</b>' : ''}${s.box ? ' · ' + esc(s.box) : ''}${s.turno ? ' · ' + esc(s.turno) : ''}${s.programa ? ' · ' + esc(s.programa) : ''}${s.prioridad === 'URGENTE' ? ' · <span class="estado e-rojo">URGENTE</span>' : ''}${s.en_plazo === 'SI' ? ' · <span class="estado e-verde">En plazo</span>' : (s.en_plazo === 'NO' ? ' · <span class="estado e-amarillo">Fuera de plazo</span>' : '')}</div>
       ${s.comentario ? `<p class="muted">“${esc(s.comentario)}”</p>` : ''}
       ${s.items.map(i => `<div class="item-sol"><span>${esc(i.nombre)}</span><span><b>${txtCant(i.solicitada, i)}</b>${i.entregada !== null ? ' → entregado ' + txtCant(i.entregada, i) : ''}</span></div>`).join('')}
       ${s.fecha_atencion ? `<p class="muted pequeno">Atendida por ${esc(s.atendido_por)} el ${fecha(s.fecha_atencion, true)}${s.obs_bodega ? ': ' + esc(s.obs_bodega) : ''}</p>` : ''}
@@ -319,7 +329,7 @@
   async function vBandeja() {
     const f = S.filtro.bandeja || 'ABIERTAS';
     if (!S.inicio) cargarInicio().then(() => { if (S.vista === 'bandeja') pintarKpis(); });
-    V(`<div id="kpis"></div><div class="chips" style="margin-bottom:10px">${[['ABIERTAS', 'Por atender'], ['PENDIENTE', 'Pendientes'], ['ENTREGADA', 'Entregadas'], ['PARCIAL', 'Parciales'], ['RECHAZADA', 'Rechazadas'], ['TODAS', 'Todas']].map(x =>
+    V(`<div id="kpis"></div><p><button class="btn bloque" onclick="App.ir('preparar')">🖨 Preparar entregas de la semana</button></p><div class="chips" style="margin-bottom:10px">${[['ABIERTAS', 'Por atender'], ['PENDIENTE', 'Pendientes'], ['ENTREGADA', 'Entregadas'], ['PARCIAL', 'Parciales'], ['RECHAZADA', 'Rechazadas'], ['TODAS', 'Todas']].map(x =>
       `<button class="chip ${f === x[0] ? 'activo' : ''}" onclick="App.filtrar('bandeja','${x[0]}')">${x[1]}</button>`).join('')}</div><div id="lb"><div class="vacio"><div class="spinner"></div></div></div>`);
     pintarKpis();
     await intentar(async () => {
@@ -335,7 +345,7 @@
       ${esAdmin() ? `<div class="kpi"><b>${i.por_vencer || 0}</b><span>Accesos por vencer (30 días)</span></div><div class="kpi"><b>${i.vencidos || 0}</b><span>Accesos vencidos</span></div>` : ''}</div>`;
   }
   function atender(id) {
-    const s = S.bandeja.find(x => x.id === id);
+    const s = (S.vista === 'preparar' && S.prep ? S.prep.solicitudes : S.bandeja).find(x => x.id === id);
     modal(`<h2>Atender ${esc(s.id)}</h2><p class="muted">${esc(s.nombre)} · ${fecha(s.fecha, true)}${s.box ? ' · ' + esc(s.box) : ''}</p>
       <p class="muted pequeno">Indique la cantidad realmente entregada de cada producto (0 si no hay).</p>
       ${s.items.map((i, k) => `<div class="producto" style="box-shadow:none;border:1px solid var(--borde)"><div class="nom">${esc(i.nombre)}<small>Solicitado: ${txtCant(i.solicitada, i)}${i.factor > 1 ? ' · ingrese lo entregado en UD (unidades AVIS)' : ''}</small></div>
@@ -346,11 +356,11 @@
       <p><button class="btn sec bloque" onclick="App.cerrarModal()">Cancelar</button></p>`);
   }
   async function confirmarAtencion(id, rechazo) {
-    const s = S.bandeja.find(x => x.id === id);
+    const s = (S.vista === 'preparar' && S.prep ? S.prep.solicitudes : S.bandeja).find(x => x.id === id);
     const items = s.items.map((i, k) => ({ producto_id: i.producto_id, entregada: rechazo ? 0 : ($('#ent' + k).value || 0) }));
     await intentar(async () => {
       const r = await api('atenderSolicitud', { id, items, obs: $('#aobs').value, avis_registrado: !rechazo && $('#aavis').checked });
-      cerrarModal(); toast('Solicitud ' + id + ': ' + r.estado); S.inicio = null; cargarInicio(); vBandeja();
+      cerrarModal(); toast('Solicitud ' + id + ': ' + r.estado); S.inicio = null; cargarInicio(); S.vista === 'preparar' ? vPreparar() : vBandeja();
     });
   }
   async function eliminarSolicitud(id) {
@@ -358,6 +368,134 @@
     await intentar(async () => { await api('eliminarSolicitudes', { ids: [id], confirmacion: 'BORRAR' }); toast('Solicitud eliminada.'); S.inicio = null; cargarInicio(); vBandeja(); });
   }
   async function marcarAvis(id) { await intentar(async () => { await api('marcarAvis', { id }); toast('Marcada como rebajada en AVIS.'); S.inicio = null; cargarInicio(); vBandeja(); }); }
+
+  /* ================= Preparación semanal de entregas (bodega) ================= */
+  const isoD = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const lunesDe = d => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
+  const masDias = (iso, n) => { const x = new Date(iso + 'T12:00:00'); x.setDate(x.getDate() + n); return isoD(x); };
+  const SEPARAR = [['BTP', 'Box, turno y programa'], ['B', 'Box'], ['T', 'Turno'], ['P', 'Programa']];
+  function semana(n) { S.filtro.prepLunes = n === 0 ? isoD(lunesDe(new Date())) : masDias(S.filtro.prepLunes, 7 * n); S.prepNoSel = {}; vPreparar(); }
+  function irSemana(v) { if (!v) return; S.filtro.prepLunes = isoD(lunesDe(new Date(v + 'T12:00:00'))); S.prepNoSel = {}; vPreparar(); }
+  // grupos marcados para imprimir o descargar (por defecto, todos)
+  const prepMarcados = () => (S.prepGrupos || []).filter(g => !(S.prepNoSel || {})[g.titulo]);
+  function marcarGrupo(k, v) { S.prepNoSel = S.prepNoSel || {}; const t = S.prepGrupos[k].titulo; if (v) delete S.prepNoSel[t]; else S.prepNoSel[t] = 1; contarMarcados(); }
+  function marcarTodos(v) { S.prepNoSel = {}; if (!v) (S.prepGrupos || []).forEach(g => S.prepNoSel[g.titulo] = 1); document.querySelectorAll('.prSel').forEach(c => c.checked = v); contarMarcados(); }
+  function contarMarcados() {
+    const n = prepMarcados().length, t = (S.prepGrupos || []).length;
+    const a = $('#prCuenta'); if (a) a.textContent = n + ' de ' + t + ' grupo' + (t === 1 ? '' : 's') + ' marcado' + (t === 1 ? '' : 's');
+    const b = $('#prBtnImp'); if (b) b.textContent = '🖨 Imprimir marcados (' + n + ')';
+    const c = $('#prBtnXls'); if (c) c.textContent = '⬇ Excel de marcados (' + n + ')';
+  }
+  async function vPreparar() {
+    const f = S.filtro;
+    if (!f.prepLunes) f.prepLunes = isoD(lunesDe(new Date()));
+    f.prepAgrupar = f.prepAgrupar || 'BTP'; f.prepIncluir = f.prepIncluir || 'PENDIENTES';
+    const lun = f.prepLunes, dom = masDias(lun, 6), actual = lun === isoD(lunesDe(new Date()));
+    V(`<div class="tarjeta"><p class="muted">Lista de lo que se debe preparar en bodega, separada por box, turno y programa. Al imprimir, cada grupo sale en una hoja distinta.</p>
+      <div class="fila" style="align-items:center"><button class="btn sec chico" onclick="App.semana(-1)" title="Semana anterior">◀</button>
+        <div class="col" style="text-align:center"><b>Semana del ${fecha(lun)} al ${fecha(dom)}</b> ${actual ? '<span class="estado e-verde">Semana actual</span>' : `<button class="btn sec chico" onclick="App.semana(0)">Ir a la actual</button>`}</div>
+        <button class="btn sec chico" onclick="App.semana(1)" title="Semana siguiente">▶</button></div>
+      <div class="fila"><div class="col"><label>Otra semana (elija cualquier día)</label><input type="date" value="${lun}" onchange="App.irSemana(this.value)"></div>
+        <div class="col"><label>Separar por</label><select onchange="App.filtrar('prepAgrupar', this.value)">${SEPARAR.map(x => `<option value="${x[0]}" ${f.prepAgrupar === x[0] ? 'selected' : ''}>${x[1]}</option>`).join('')}</select></div>
+        <div class="col"><label>Incluir</label><select onchange="App.filtrar('prepIncluir', this.value)"><option value="PENDIENTES">Solo pendientes de entrega</option><option value="TODAS" ${f.prepIncluir === 'TODAS' ? 'selected' : ''}>Todas (también las entregadas)</option></select></div></div>
+      <div class="fila" style="margin-top:10px"><button class="btn" id="prBtnImp" onclick="App.imprimirPreparacion()">🖨 Imprimir marcados</button><button class="btn sec" id="prBtnXls" onclick="App.excelPreparacion()">⬇ Excel de marcados</button></div>
+      <p class="muted pequeno">Cada grupo marcado sale en una hoja distinta. Use las casillas de cada grupo para elegir cuáles imprimir.</p></div>
+      <div id="prOut"><div class="vacio"><div class="spinner"></div></div></div>`);
+    await intentar(async () => {
+      const P = await api('preparacion', { desde: lun, hasta: dom, incluir: f.prepIncluir }, { silencioso: true });
+      if (S.vista !== 'preparar' || S.filtro.prepLunes !== lun) return;
+      S.prep = P; pintarPreparacion();
+    });
+  }
+  function gruposPrep(P, modo) {
+    const ord = (l, v) => { const i = l.indexOf(v); return i < 0 ? 999 : i; }, g = {};
+    P.solicitudes.forEach(s => {
+      const box = s.box || 'Sin lugar', tur = s.turno || 'Sin turno', pro = s.programa || 'Sin programa';
+      const partes = { B: [box], T: [tur], P: [pro] }[modo] || [box, tur, pro], k = partes.join(' · ');
+      const x = g[k] = g[k] || { titulo: k, box, tur, pro, sols: [], prods: {} };
+      x.sols.push(s);
+      s.items.forEach(i => {
+        const p = x.prods[i.producto_id] = x.prods[i.producto_id] || { nombre: i.nombre, factor: i.factor, unidad_pack: i.unidad_pack, solicitada: 0, entregada: 0, hayEnt: false, n: 0 };
+        p.solicitada += i.solicitada; p.n++; if (i.entregada !== null) { p.entregada += i.entregada; p.hayEnt = true; }
+      });
+    });
+    const clave = x => ({ B: [ord(P.boxes, x.box)], T: [ord(P.turnos, x.tur)], P: [ord(P.programas, x.pro)] }[modo] || [ord(P.boxes, x.box), ord(P.turnos, x.tur), ord(P.programas, x.pro)]);
+    return Object.values(g).sort((a, b) => { const ka = clave(a), kb = clave(b); for (let i = 0; i < ka.length; i++) if (ka[i] !== kb[i]) return ka[i] - kb[i]; return a.titulo.localeCompare(b.titulo); })
+      .map(x => Object.assign(x, { prods: Object.values(x.prods).sort((a, b) => a.nombre.localeCompare(b.nombre)), pend: x.sols.filter(s => s.estado === 'PENDIENTE') }));
+  }
+  const equiv = p => p.factor > 1 && p.unidad_pack ? Math.round(p.solicitada / p.factor * 100) / 100 + ' ' + p.unidad_pack : '';
+  function pintarPreparacion() {
+    const P = S.prep, todas = S.filtro.prepIncluir === 'TODAS', G = S.prepGrupos = gruposPrep(P, S.filtro.prepAgrupar);
+    const el = $('#prOut'); if (!el) return;
+    if (!G.length) { el.innerHTML = `<div class="vacio">${todas ? 'No hay solicitudes en esta semana.' : 'No hay solicitudes pendientes de entrega en esta semana. 👍'}</div>`; return; }
+    const ns = S.prepNoSel || {};
+    el.innerHTML = `<div class="tarjeta fila" style="align-items:center;flex-wrap:wrap;gap:8px"><span class="col muted"><b id="prCuenta"></b> · ${P.solicitudes.length} solicitudes${todas ? '' : ' pendientes'}</span>
+        <button class="btn sec chico" onclick="App.marcarTodos(true)">☑ Marcar todos</button><button class="btn sec chico" onclick="App.marcarTodos(false)">☐ Ninguno</button></div>` + G.map((g, k) => `<div class="tarjeta">
+      <div class="fila entre" style="align-items:center"><label class="check" style="margin:0;flex:1"><input type="checkbox" class="prSel" ${ns[g.titulo] ? '' : 'checked'} onchange="App.marcarGrupo(${k}, this.checked)"> <span><h2 style="margin:0;display:inline">${esc(g.titulo)}</h2></span></label><span class="muted">${g.sols.length} solicitud${g.sols.length === 1 ? '' : 'es'}</span></div>
+      <div class="tabla-wrap"><table><thead><tr><th>Producto</th><th class="num">${todas ? 'Solicitado' : 'A preparar'}</th>${todas ? '<th class="num">Entregado</th>' : ''}</tr></thead><tbody>
+      ${g.prods.map(p => `<tr><td>${esc(p.nombre)}</td><td class="num"><b>${txtCant(p.solicitada, p)}</b></td>${todas ? `<td class="num">${p.hayEnt ? txtCant(p.entregada, p) : '—'}</td>` : ''}</tr>`).join('')}</tbody></table></div>
+      <details><summary class="muted">${g.sols.length === 1 ? 'Ver la solicitud del grupo' : 'Ver las ' + g.sols.length + ' solicitudes del grupo'}</summary>
+        ${g.sols.map(s => `<div class="item-sol"><span><b>${esc(s.id)}</b> · ${fecha(s.fecha, true)} · ${esc(s.nombre)}${S.filtro.prepAgrupar === 'BTP' ? '' : ' · ' + esc([s.box, s.turno, s.programa].filter(Boolean).join(' · '))}${s.prioridad === 'URGENTE' ? ' <span class="estado e-rojo">URGENTE</span>' : ''}${s.comentario ? '<br><span class="muted">“' + esc(s.comentario) + '”</span>' : ''}</span>
+          <span>${s.estado === 'PENDIENTE' ? `<button class="btn sec chico" onclick="App.atender('${s.id}')">Entrega parcial…</button>` : `<span class="estado ${COLOR_EST[s.estado] || 'e-gris'}">${esc(s.estado)}</span>`}</span></div>`).join('')}</details>
+      ${g.pend.length ? `<p><button class="btn ok bloque" onclick="App.entregarGrupoForm(${k})">✓ Entregado: ${g.pend.length === 1 ? 'marcar la solicitud pendiente como entregada' : 'marcar las ' + g.pend.length + ' solicitudes pendientes como entregadas'}</button></p>` : '<p><span class="estado e-verde">Todo entregado</span></p>'}</div>`).join('');
+    contarMarcados();
+  }
+  function entregarGrupoForm(k) {
+    const g = S.prepGrupos[k];
+    modal(`<h2>Marcar como entregado</h2><p><b>${esc(g.titulo)}</b></p>
+      <p>Se registrará como entregado <b>todo lo solicitado</b> en ${g.pend.length === 1 ? 'la solicitud pendiente' : 'las ' + g.pend.length + ' solicitudes pendientes'} de este grupo: ${g.pend.map(s => esc(s.id)).join(', ')}.</p>
+      <p class="muted pequeno">Si algún producto no se entregó completo, use <b>Entrega parcial…</b> en esa solicitud antes de marcar el grupo.</p>
+      <label>Observación (opcional)</label><input type="text" id="egObs" maxlength="500">
+      <label class="check"><input type="checkbox" id="egAvis"> <span>Ya rebajé estas entregas en AVIS (módulo farmacia)</span></label>
+      <div class="fila" style="margin-top:12px"><button class="btn ok col" onclick="App.entregarGrupo(${k})">Confirmar entrega</button><button class="btn sec col" onclick="App.cerrarModal()">Cancelar</button></div>`);
+  }
+  async function entregarGrupo(k) {
+    const g = S.prepGrupos[k];
+    await intentar(async () => {
+      const r = await api('entregarLote', { ids: g.pend.map(s => s.id), avis_registrado: $('#egAvis').checked, obs: $('#egObs').value });
+      cerrarModal(); toast(r.entregadas + ' solicitud' + (r.entregadas === 1 ? '' : 'es') + ' marcada' + (r.entregadas === 1 ? '' : 's') + ' como entregada' + (r.entregadas === 1 ? '' : 's') + '.' + (r.omitidas && r.omitidas.length ? ' Omitidas: ' + r.omitidas.join(', ') : ''));
+      S.inicio = null; cargarInicio(); vPreparar();
+    });
+  }
+  function imprimirPreparacion() {
+    const G = prepMarcados(), P = S.prep;
+    if (!S.prepGrupos || !S.prepGrupos.length) return toast('No hay solicitudes para imprimir en esta semana.', true);
+    if (!G.length) return toast('Marque al menos un grupo para imprimir.', true);
+    const todas = S.filtro.prepIncluir === 'TODAS', btp = S.filtro.prepAgrupar === 'BTP', ahora = new Date();
+    const impreso = String(ahora.getDate()).padStart(2, '0') + '/' + String(ahora.getMonth() + 1).padStart(2, '0') + '/' + ahora.getFullYear() + ' ' + String(ahora.getHours()).padStart(2, '0') + ':' + String(ahora.getMinutes()).padStart(2, '0');
+    let el = $('#imprimir'); if (!el) { el = document.createElement('div'); el.id = 'imprimir'; document.body.appendChild(el); }
+    el.innerHTML = G.map(g => `<section class="hoja">
+      <div class="h-cab"><div><b>${esc(P.unidad)}</b><br>Preparación de entregas · Bodega dental</div><div class="h-der">Semana del ${fecha(P.desde)} al ${fecha(P.hasta)}<br>Impreso ${impreso}</div></div>
+      <h1>${esc(g.titulo)}</h1><p class="h-sub">${g.sols.length} solicitud${g.sols.length === 1 ? '' : 'es'} · ${g.prods.length} producto${g.prods.length === 1 ? '' : 's'}${todas ? '' : ' · pendientes de entrega'}</p>
+      <table class="h-tab"><thead><tr><th style="width:5%">N°</th><th>Producto (AVIS)</th><th style="width:14%">Cantidad</th><th style="width:13%">Equivale a</th><th style="width:10%">Preparado</th><th style="width:12%">Entregado</th></tr></thead><tbody>
+      ${g.prods.map((p, i) => `<tr><td class="c">${i + 1}</td><td>${esc(p.nombre)}</td><td class="n"><b>${p.solicitada} UD</b></td><td class="n">${esc(equiv(p))}</td><td class="c"><span class="cuad"></span></td><td class="c">${todas && p.hayEnt ? p.entregada + ' UD' : '<span class="cuad"></span>'}</td></tr>`).join('')}</tbody></table>
+      <h3>Solicitudes incluidas</h3>
+      <table class="h-tab h-sol"><thead><tr><th style="width:11%">Solicitud</th><th style="width:15%">Fecha</th><th style="width:22%">Solicitado por</th>${btp ? '' : '<th>Box · turno · programa</th>'}<th style="width:10%">Prioridad</th><th>Comentario</th></tr></thead><tbody>
+      ${g.sols.map(s => `<tr><td>${esc(s.id)}</td><td>${fecha(s.fecha, true)}</td><td>${esc(s.nombre)}</td>${btp ? '' : `<td>${esc([s.box, s.turno, s.programa].filter(Boolean).join(' · '))}</td>`}<td>${s.prioridad === 'URGENTE' ? '<b>URGENTE</b>' : 'Normal'}</td><td>${esc(s.comentario || '')}</td></tr>`).join('')}</tbody></table>
+      <div class="h-firmas"><div>Preparado por</div><div>Recibido por</div><div>Fecha y hora de entrega</div></div>
+      <p class="h-nota">Después de entregar, registrar en la app: Solicitudes → Preparar entregas de la semana → “Entregado”.</p></section>`).join('');
+    setTimeout(() => window.print(), 50);
+  }
+  async function excelPreparacion() {
+    const G = prepMarcados(), P = S.prep;
+    if (!S.prepGrupos || !S.prepGrupos.length) return toast('No hay solicitudes en esta semana.', true);
+    if (!G.length) return toast('Marque al menos un grupo para descargar.', true);
+    await cargarXLSX();
+    const wb = XLSX.utils.book_new(), usados = {}, btp = S.filtro.prepAgrupar === 'BTP';
+    G.forEach(g => {
+      const filas = [[P.unidad + ' · Preparación de entregas'], ['Semana del ' + fecha(P.desde) + ' al ' + fecha(P.hasta)], [g.titulo], [],
+        ['N°', 'Producto (AVIS)', 'Cantidad (UD)', 'Equivale a', 'Preparado', 'Entregado']]
+        .concat(g.prods.map((p, i) => [i + 1, p.nombre, p.solicitada, equiv(p), '', p.hayEnt ? p.entregada : '']))
+        .concat([[], ['Solicitudes incluidas'], ['Solicitud', 'Fecha', 'Solicitado por'].concat(btp ? [] : ['Box · turno · programa']).concat(['Prioridad', 'Estado', 'Comentario'])])
+        .concat(g.sols.map(s => [s.id, fecha(s.fecha, true), s.nombre].concat(btp ? [] : [[s.box, s.turno, s.programa].filter(Boolean).join(' · ')]).concat([s.prioridad, s.estado, s.comentario || ''])));
+      const ws = XLSX.utils.aoa_to_sheet(filas);
+      ws['!cols'] = [{ wch: 10 }, { wch: 52 }, { wch: 14 }, { wch: 14 }, { wch: 11 }, { wch: 11 }, { wch: 40 }];
+      let n = g.titulo.replace(/[\[\]:*?\/\\]/g, '').replace(/Box /g, 'B').slice(0, 28), b = n, c = 2;
+      while (usados[n]) n = b.slice(0, 26) + ' ' + c++;
+      usados[n] = 1; XLSX.utils.book_append_sheet(wb, ws, n);
+    });
+    XLSX.writeFile(wb, 'Preparacion_bodega_' + P.desde + '_al_' + P.hasta + '.xlsx');
+  }
 
   /* ================= ADMIN: corte ================= */
   async function vCorte() {
@@ -956,7 +1094,7 @@
     const u = S.usuarios.find(x => x.id === id);
     modal(`<h2>Eliminar usuario</h2><p>Se eliminará a <b>${esc(u.nombre)}</b> (${esc(u.usuario)}). Ya no podrá ingresar.</p>
       <p class="muted pequeno">Si la persona solo terminó su contrato, es preferible desmarcar "Usuario activo" o dejar su fecha de término: así se conserva su historial.</p>
-      ${u.n_solicitudes ? `<label class="check"><input type="checkbox" id="euSol"> Borrar también sus <b>${u.n_solicitudes}</b> solicitudes (recomendado para usuarios de prueba)</label>` : ''}
+      ${u.n_solicitudes ? `<label class="check"><input type="checkbox" id="euSol"> <span>Borrar también sus <b>${u.n_solicitudes}</b> solicitudes (recomendado para usuarios de prueba)</span></label>` : ''}
       <label>Para confirmar, escriba <b>BORRAR</b></label><input id="euConf" autocomplete="off">
       <div class="fila" style="margin-top:12px"><button class="btn peligro col" onclick="App.eliminarUsuario('${id}')">Eliminar</button><button class="btn sec col" onclick="App.cerrarModal()">Cancelar</button></div>`);
   }
@@ -981,6 +1119,7 @@
       puede('PEDIR') ? c('mis', '📋 Mis pedidos', 'Estado de mis solicitudes.') : '',
       puede('PLAZOS') ? c('plazos', '⏰ Plazos de pedido', 'Fechas y horas límite para que las TONS soliciten.') : '',
       puede('REPORTES') ? c('reportes', '📈 Consumo y cumplimiento', 'Quién pide en plazo, qué se consume y por box.') : '',
+      puede('SOLICITUDES') ? c('preparar', '🖨 Preparación semanal', 'Lista de la semana por box, turno y programa para preparar en bodega, imprimir y marcar como entregado.') : '',
       (puede('REPORTES') || puede('CORTE') || puede('CONSOLIDADO')) && !navItems().some(n => n[0] === 'consolidado') ? c('consolidado', '📋 Consolidación solo de la App', 'Lo solicitado y entregado por la app (sin AVIS), en el orden de las planillas oficiales, para descargar.') : '',
       esAdmin() ? c('usuarios', '👥 Usuarios y permisos', 'Accesos, vigencia de contratos, permisos de la encargada de bodega.') : '',
       esAdmin() ? c('config', '⚙️ Configuración', 'Correos de Droguería y Bodega Central, % de seguridad, modo de plazos.') : '',
@@ -1047,7 +1186,7 @@
     });
     $('#coOut').innerHTML = `<div class="tarjeta"><div class="fila entre"><b>${c.total_solicitudes} solicitudes del ${fecha(c.desde)} al ${fecha(c.hasta)}</b>
         <span class="fila"><button class="btn sec chico" onclick="App.descargarConsolidado('FARMACIA')">⬇ Planilla oficial Farmacia</button><button class="btn sec chico" onclick="App.descargarConsolidado('BODEGA')">⬇ Planilla oficial Bodega Central</button><button class="btn sec chico" onclick="App.descargarConsolidadoDetalle()">⬇ Detalle (Excel)</button></span></div>
-        <label class="check pequeno" style="margin:6px 0 0"><input type="checkbox" id="coBase" ${S.filtro.coBase === 'SOLICITADO' ? 'checked' : ''} onchange="App.filtrar('coBase', this.checked ? 'SOLICITADO' : 'ENTREGADO')"> En la planilla oficial, poner como consumo lo <b>solicitado</b> (por defecto se pone lo <b>entregado</b>)</label></div>
+        <label class="check pequeno" style="margin:6px 0 0"><input type="checkbox" id="coBase" ${S.filtro.coBase === 'SOLICITADO' ? 'checked' : ''} onchange="App.filtrar('coBase', this.checked ? 'SOLICITADO' : 'ENTREGADO')"> <span>En la planilla oficial, poner como consumo lo <b>solicitado</b> (por defecto se pone lo <b>entregado</b>)</span></label></div>
       <div class="chips" style="margin-bottom:8px"><button class="chip ${tab === 'FARMACIA' ? 'activo' : ''}" onclick="App.filtrar('coTab','FARMACIA')">Farmacia / Droguería (${n('FARMACIA')})</button>
         <button class="chip ${tab === 'BODEGA' ? 'activo' : ''}" onclick="App.filtrar('coTab','BODEGA')">Bodega Central (${n('BODEGA')})</button>
         <button class="chip ${solo ? 'activo' : ''}" onclick="App.filtrar('coSolo', ${!solo})">Solo con movimiento</button></div>
@@ -1122,7 +1261,7 @@
   const CAMPOS_CFG = [['NOMBRE_UNIDAD', 'Nombre de la unidad (aparece en correos e informes)'], ['NOMBRE_DROGUERIA', 'Nombre destinatario Droguería'], ['CORREO_DROGUERIA', 'Correo encargado/a de Droguería (planilla Farmacia)'],
     ['NOMBRE_BODEGA_CENTRAL', 'Nombre destinatario Bodega Central'], ['CORREO_BODEGA_CENTRAL', 'Correo encargada de Bodega Central Dental'], ['CORREOS_COPIA', 'Correos en copia de todos los envíos (separados por coma)'],
     ['CORREOS_AVISO_SOLICITUD', 'Correos que reciben aviso de cada nueva solicitud de TONS (vacío = sin aviso)'], ['SEGURIDAD_PCT', '% de seguridad para el pedido sugerido'],
-    ['BOXES', 'Lugares de entrega (separados por coma)'], ['AVISO_VIGENCIA_DIAS', 'Días de anticipación para avisar vencimiento de accesos']];
+    ['BOXES', 'Lugares de entrega (separados por coma)'], ['TURNOS', 'Turnos que se eligen al solicitar (separados por coma)'], ['PROGRAMAS', 'Programas que se eligen al solicitar (separados por coma)'], ['AVISO_VIGENCIA_DIAS', 'Días de anticipación para avisar vencimiento de accesos']];
   async function vConfig() {
     V('<div class="vacio"><div class="spinner"></div></div>');
     await intentar(async () => {
@@ -1158,14 +1297,14 @@
   function categoria(c) { S.cat = c; vCatalogo(); }
   function filtrar(k, v) {
     S.filtro[k] = v;
-    ({ bandeja: vBandeja, corteTab: pintarCorte, soloPedido: pintarCorte, recep: pintarRecepcion, cat: () => vCatAdmin(), usu: pintarUsuarios, coTab: pintarConsolidado, coSolo: pintarConsolidado, coBase: () => {} })[k]();
+    ({ bandeja: vBandeja, corteTab: pintarCorte, soloPedido: pintarCorte, recep: pintarRecepcion, cat: () => vCatAdmin(), usu: pintarUsuarios, coTab: pintarConsolidado, coSolo: pintarConsolidado, coBase: () => {}, prepAgrupar: pintarPreparacion, prepIncluir: vPreparar })[k]();
   }
   async function instalarApp() { if (!S.instalar) return; S.instalar.prompt(); await S.instalar.userChoice; S.instalar = null; render(); }
 
-  const VISTAS = { catalogo: vCatalogo, carrito: vCarrito, mis: vMis, perfil: vPerfil, bandeja: vBandeja, corte: vCorte, recepcion: vRecepcion, catadmin: () => vCatAdmin(), usuarios: vUsuarios, config: vConfig, mas: vMas, plazos: vPlazos, reportes: vReportes, consolidado: vConsolidado };
+  const VISTAS = { catalogo: vCatalogo, carrito: vCarrito, mis: vMis, perfil: vPerfil, bandeja: vBandeja, corte: vCorte, recepcion: vRecepcion, catadmin: () => vCatAdmin(), usuarios: vUsuarios, config: vConfig, mas: vMas, plazos: vPlazos, reportes: vReportes, consolidado: vConsolidado, preparar: vPreparar };
 
   window.App = { login, logout, cambiarClave, ir, refrescar, buscar, buscarAdmin, categoria, filtrar, sumar, fijar, verFoto, cerrarModal, vaciarCarrito, enviarSolicitud, anular,
-    atender, confirmarAtencion, rechazar: id => { if (confirm('¿Rechazar toda la solicitud?')) confirmarAtencion(id, true); }, marcarAvis,
+    atender, confirmarAtencion, semana, irSemana, entregarGrupoForm, entregarGrupo, imprimirPreparacion, excelPreparacion, marcarGrupo, marcarTodos, rechazar: id => { if (confirm('¿Rechazar toda la solicitud?')) confirmarAtencion(id, true); }, marcarAvis,
     importarAvis, crearCorte, abrirCorte, editarCorte, guardarCorte: () => guardarCorte(false), conformarCorte, reabrirCorte, eliminarCorte, salirCorte, enviarCorteForm, enviarCorte,
     leerDespacho, crearRecepcion, abrirRecepcion, editarRecep, guardarRecepcion: () => guardarRecepcion(false), cerrarRecepcion, salirRecepcion, enviarRecepcionForm, enviarRecepcion,
     editarProducto, filasPlanilla: () => filasPlanilla(), guardarProducto, subirFoto, quitarFoto, importarFotosForm, leerFotosPlanilla, cargarFotosPlanilla, descargarClasificacion, importarClasifForm, leerClasificacion, aplicarClasificacion, borrarFotosForm, borrarFotos, depurarCatalogoForm, depurarCatalogo, cambiarModo, eliminarSolicitud, eliminarUsuarioForm, eliminarUsuario, borrarTodasSolicitudes, cargarConsolidado, descargarConsolidado, descargarConsolidadoDetalle, editarUsuario, tipoContrato, guardarUsuario, resetClave, guardarConfig, instalarApp,
