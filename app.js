@@ -16,7 +16,7 @@
   const num = v => (v === null || v === undefined || v === '') ? '' : (Math.round(Number(v) * 100) / 100).toLocaleString('es-CL');
   const fecha = (iso, hora) => { if (!iso) return ''; const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/); if (!m) return iso; return m[3] + '/' + m[2] + '/' + m[1] + (hora && m[4] ? ' ' + m[4] + ':' + m[5] : ''); };
   const hoyISO = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
-  const APP_VERSION = '1.8.0';
+  const APP_VERSION = '1.8.1';
   const esAdmin = () => S.usuario && S.usuario.rol === 'ADMIN';
   const puede = p => !!(S.usuario && (S.usuario.permisos || (S.usuario.rol === 'ADMIN' ? ['PEDIR', 'SOLICITUDES', 'RECEPCION', 'CORTE', 'CONSOLIDADO', 'CATALOGO', 'REPORTES', 'PLAZOS'] : ['PEDIR'])).includes(p));
   const esGestor = () => S.usuario && S.usuario.rol !== 'USUARIO';
@@ -321,15 +321,13 @@
   function botonesBandeja(s) {
     let h = '<div class="fila" style="margin-top:8px">';
     if (s.estado === 'PENDIENTE') h += `<button class="btn chico" onclick="App.atender('${s.id}')">Atender / entregar</button>`;
-    if ((s.estado === 'ENTREGADA' || s.estado === 'PARCIAL') && s.avis_registrado !== 'SI') h += `<button class="btn ok chico" onclick="App.marcarAvis('${s.id}')">✓ Ya rebajé en AVIS</button><span class="estado e-amarillo">Falta rebajar en AVIS</span>`;
-    if (s.avis_registrado === 'SI') h += '<span class="estado e-verde">Rebajado en AVIS</span>';
     if (esAdmin()) h += `<button class="btn peligro chico" style="margin-left:auto" title="Eliminar solicitud" onclick="App.eliminarSolicitud('${s.id}')">🗑</button>`;
     return h + '</div>';
   }
   async function vBandeja() {
-    const f = S.filtro.bandeja || 'ABIERTAS';
+    const f = S.filtro.bandeja || 'PENDIENTE';
     if (!S.inicio) cargarInicio().then(() => { if (S.vista === 'bandeja') pintarKpis(); });
-    V(`<div id="kpis"></div><p><button class="btn bloque" onclick="App.ir('preparar')">🖨 Preparar entregas de la semana</button></p><div class="chips" style="margin-bottom:10px">${[['ABIERTAS', 'Por atender'], ['PENDIENTE', 'Pendientes'], ['ENTREGADA', 'Entregadas'], ['PARCIAL', 'Parciales'], ['RECHAZADA', 'Rechazadas'], ['TODAS', 'Todas']].map(x =>
+    V(`<div id="kpis"></div><p><button class="btn bloque" onclick="App.ir('preparar')">🖨 Preparar entregas de la semana</button></p><div class="chips" style="margin-bottom:10px">${[['PENDIENTE', 'Por atender'], ['ENTREGADA', 'Entregadas'], ['PARCIAL', 'Parciales'], ['RECHAZADA', 'Rechazadas'], ['TODAS', 'Todas']].map(x =>
       `<button class="chip ${f === x[0] ? 'activo' : ''}" onclick="App.filtrar('bandeja','${x[0]}')">${x[1]}</button>`).join('')}</div><div id="lb"><div class="vacio"><div class="spinner"></div></div></div>`);
     pintarKpis();
     await intentar(async () => {
@@ -341,7 +339,7 @@
   function pintarKpis() {
     const el = $('#kpis'); if (!el || !S.inicio) return;
     const i = S.inicio;
-    el.innerHTML = `<div class="kpis"><div class="kpi"><b>${i.pendientes || 0}</b><span>Solicitudes pendientes</span></div><div class="kpi"><b>${i.sin_avis || 0}</b><span>Entregadas sin rebajar en AVIS</span></div>
+    el.innerHTML = `<div class="kpis"><div class="kpi"><b>${i.pendientes || 0}</b><span>Solicitudes pendientes</span></div><div class="kpi"><b>${i.urgentes || 0}</b><span>Urgentes por atender</span></div>
       ${esAdmin() ? `<div class="kpi"><b>${i.por_vencer || 0}</b><span>Accesos por vencer (30 días)</span></div><div class="kpi"><b>${i.vencidos || 0}</b><span>Accesos vencidos</span></div>` : ''}</div>`;
   }
   function atender(id) {
@@ -351,7 +349,6 @@
       ${s.items.map((i, k) => `<div class="producto" style="box-shadow:none;border:1px solid var(--borde)"><div class="nom">${esc(i.nombre)}<small>Solicitado: ${txtCant(i.solicitada, i)}${i.factor > 1 ? ' · ingrese lo entregado en UD (unidades AVIS)' : ''}</small></div>
         <input class="num" style="width:90px;text-align:right" type="number" min="0" step="1" id="ent${k}" value="${i.solicitada}"></div>`).join('')}
       <label>Observación para quien solicitó (opcional)</label><input type="text" id="aobs" maxlength="500" placeholder="Ej: no queda stock de vinilo M">
-      <label class="check"><input type="checkbox" id="aavis"> Ya rebajé esta entrega en AVIS (módulo farmacia)</label>
       <div class="fila"><button class="btn ok col" onclick="App.confirmarAtencion('${s.id}')">Registrar entrega</button><button class="btn peligro col" onclick="App.rechazar('${s.id}')">Rechazar todo</button></div>
       <p><button class="btn sec bloque" onclick="App.cerrarModal()">Cancelar</button></p>`);
   }
@@ -359,7 +356,7 @@
     const s = (S.vista === 'preparar' && S.prep ? S.prep.solicitudes : S.bandeja).find(x => x.id === id);
     const items = s.items.map((i, k) => ({ producto_id: i.producto_id, entregada: rechazo ? 0 : ($('#ent' + k).value || 0) }));
     await intentar(async () => {
-      const r = await api('atenderSolicitud', { id, items, obs: $('#aobs').value, avis_registrado: !rechazo && $('#aavis').checked });
+      const r = await api('atenderSolicitud', { id, items, obs: $('#aobs').value });
       cerrarModal(); toast('Solicitud ' + id + ': ' + r.estado); S.inicio = null; cargarInicio(); S.vista === 'preparar' ? vPreparar() : vBandeja();
     });
   }
@@ -367,7 +364,6 @@
     if (!confirm('¿Eliminar definitivamente la solicitud ' + id + '? Se borra también de los reportes y consolidados.')) return;
     await intentar(async () => { await api('eliminarSolicitudes', { ids: [id], confirmacion: 'BORRAR' }); toast('Solicitud eliminada.'); S.inicio = null; cargarInicio(); vBandeja(); });
   }
-  async function marcarAvis(id) { await intentar(async () => { await api('marcarAvis', { id }); toast('Marcada como rebajada en AVIS.'); S.inicio = null; cargarInicio(); vBandeja(); }); }
 
   /* ================= Preparación semanal de entregas (bodega) ================= */
   const isoD = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -446,13 +442,12 @@
       <p>Se registrará como entregado <b>todo lo solicitado</b> en ${g.pend.length === 1 ? 'la solicitud pendiente' : 'las ' + g.pend.length + ' solicitudes pendientes'} de este grupo: ${g.pend.map(s => esc(s.id)).join(', ')}.</p>
       <p class="muted pequeno">Si algún producto no se entregó completo, use <b>Entrega parcial…</b> en esa solicitud antes de marcar el grupo.</p>
       <label>Observación (opcional)</label><input type="text" id="egObs" maxlength="500">
-      <label class="check"><input type="checkbox" id="egAvis"> <span>Ya rebajé estas entregas en AVIS (módulo farmacia)</span></label>
       <div class="fila" style="margin-top:12px"><button class="btn ok col" onclick="App.entregarGrupo(${k})">Confirmar entrega</button><button class="btn sec col" onclick="App.cerrarModal()">Cancelar</button></div>`);
   }
   async function entregarGrupo(k) {
     const g = S.prepGrupos[k];
     await intentar(async () => {
-      const r = await api('entregarLote', { ids: g.pend.map(s => s.id), avis_registrado: $('#egAvis').checked, obs: $('#egObs').value });
+      const r = await api('entregarLote', { ids: g.pend.map(s => s.id), obs: $('#egObs').value });
       cerrarModal(); toast(r.entregadas + ' solicitud' + (r.entregadas === 1 ? '' : 'es') + ' marcada' + (r.entregadas === 1 ? '' : 's') + ' como entregada' + (r.entregadas === 1 ? '' : 's') + '.' + (r.omitidas && r.omitidas.length ? ' Omitidas: ' + r.omitidas.join(', ') : ''));
       S.inicio = null; cargarInicio(); vPreparar();
     });
@@ -1304,7 +1299,7 @@
   const VISTAS = { catalogo: vCatalogo, carrito: vCarrito, mis: vMis, perfil: vPerfil, bandeja: vBandeja, corte: vCorte, recepcion: vRecepcion, catadmin: () => vCatAdmin(), usuarios: vUsuarios, config: vConfig, mas: vMas, plazos: vPlazos, reportes: vReportes, consolidado: vConsolidado, preparar: vPreparar };
 
   window.App = { login, logout, cambiarClave, ir, refrescar, buscar, buscarAdmin, categoria, filtrar, sumar, fijar, verFoto, cerrarModal, vaciarCarrito, enviarSolicitud, anular,
-    atender, confirmarAtencion, semana, irSemana, entregarGrupoForm, entregarGrupo, imprimirPreparacion, excelPreparacion, marcarGrupo, marcarTodos, rechazar: id => { if (confirm('¿Rechazar toda la solicitud?')) confirmarAtencion(id, true); }, marcarAvis,
+    atender, confirmarAtencion, semana, irSemana, entregarGrupoForm, entregarGrupo, imprimirPreparacion, excelPreparacion, marcarGrupo, marcarTodos, rechazar: id => { if (confirm('¿Rechazar toda la solicitud?')) confirmarAtencion(id, true); },
     importarAvis, crearCorte, abrirCorte, editarCorte, guardarCorte: () => guardarCorte(false), conformarCorte, reabrirCorte, eliminarCorte, salirCorte, enviarCorteForm, enviarCorte,
     leerDespacho, crearRecepcion, abrirRecepcion, editarRecep, guardarRecepcion: () => guardarRecepcion(false), cerrarRecepcion, salirRecepcion, enviarRecepcionForm, enviarRecepcion,
     editarProducto, filasPlanilla: () => filasPlanilla(), guardarProducto, subirFoto, quitarFoto, importarFotosForm, leerFotosPlanilla, cargarFotosPlanilla, descargarClasificacion, importarClasifForm, leerClasificacion, aplicarClasificacion, borrarFotosForm, borrarFotos, depurarCatalogoForm, depurarCatalogo, cambiarModo, eliminarSolicitud, eliminarUsuarioForm, eliminarUsuario, borrarTodasSolicitudes, cargarConsolidado, descargarConsolidado, descargarConsolidadoDetalle, editarUsuario, tipoContrato, guardarUsuario, resetClave, guardarConfig, instalarApp,
