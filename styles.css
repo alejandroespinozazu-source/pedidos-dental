@@ -113,3 +113,31 @@ td input.num { text-align: right; width: 86px; }
 .check { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 14px; color: var(--texto); }
 .check input { width: 20px; height: 20px; }
 .enlaces a { display: inline-block; margin: 4px 10px 4px 0; color: var(--azul-2); font-weight: 600; }
+
+/* ---------- Impresión: preparación semanal de bodega (una hoja por grupo) ---------- */
+#imprimir { display: none; }
+@media print {
+  @page { size: letter; margin: 12mm; }
+  html, body { background: #fff !important; padding: 0 !important; margin: 0 !important; }
+  body > *:not(#imprimir) { display: none !important; }
+  #imprimir { display: block; font-family: Arial, Helvetica, sans-serif; color: #000; font-size: 10.5pt; }
+  .hoja { break-after: page; page-break-after: always; }
+  .hoja:last-child { break-after: auto; page-break-after: auto; }
+  .h-cab { display: flex; justify-content: space-between; gap: 12px; border-bottom: 2px solid #1f4e79; padding-bottom: 6px; margin-bottom: 8px; font-size: 9.5pt; }
+  .h-der { text-align: right; }
+  .hoja h1 { font-size: 17pt; margin: 6px 0 2px; color: #1f4e79; }
+  .hoja h3 { font-size: 11pt; margin: 12px 0 4px; color: #1f4e79; }
+  .h-sub { margin: 0 0 8px; color: #444; }
+  .h-tab { width: 100%; border-collapse: collapse; margin: 4px 0 8px; }
+  .h-tab th, .h-tab td { border: 1px solid #8a8a8a !important; padding: 5px 6px !important; vertical-align: top; background: #fff; color: #000 !important; position: static !important; }
+  .h-tab th { background: #e6edf5 !important; text-align: left; font-size: 9.5pt; font-weight: bold; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .h-tab td.n { text-align: right; white-space: nowrap; }
+  .h-tab td.c { text-align: center; }
+  .h-sol td { font-size: 9pt; }
+  .cuad { display: inline-block; width: 13px; height: 13px; border: 1.5px solid #000; }
+  thead { display: table-header-group; }
+  tr { break-inside: avoid; page-break-inside: avoid; }
+  .h-firmas { display: flex; gap: 24px; margin-top: 30px; }
+  .h-firmas div { flex: 1; border-top: 1px solid #000; padding-top: 4px; font-size: 9pt; text-align: center; }
+  .h-nota { font-size: 8.5pt; color: #555; margin-top: 10px; }
+}
